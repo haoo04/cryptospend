@@ -338,7 +338,17 @@ def reverse_cost_projection(session: Session, event: TransactionEvent) -> None:
         reward.status = "REVERSED"
 
 
-def portfolio_positions(session: Session) -> list[dict[str, str | bool | None]]:
+def event_effective_at(session: Session, event: TransactionEvent, as_of: str | None) -> bool:
+    if event.status == "DRAFT" or (as_of is not None and event.occurred_at >= as_of):
+        return False
+    if event.reversed_by_event_id:
+        reversal = session.get(TransactionEvent, event.reversed_by_event_id)
+        if as_of is None or (reversal is not None and reversal.occurred_at < as_of):
+            return False
+    return event.status != "REVERSED" or as_of is not None
+
+
+def portfolio_positions(session: Session, as_of: str | None = None) -> list[dict[str, str | bool | None]]:
     rows = session.execute(
         select(LedgerEntry, Account, Asset)
         .join(TransactionEvent, TransactionEvent.id == LedgerEntry.event_id)
@@ -349,46 +359,61 @@ def portfolio_positions(session: Session) -> list[dict[str, str | bool | None]]:
     quantities: dict[str, Decimal] = {}
     assets: dict[str, Asset] = {}
     for entry, _account, asset in rows:
+        event = session.get(TransactionEvent, entry.event_id)
+        if event is None or (as_of is not None and event.occurred_at >= as_of):
+            continue
         sign = Decimal(1) if entry.direction == EntryDirection.DEBIT.value else Decimal(-1)
         quantities[asset.id] = quantities.get(asset.id, Decimal(0)) + parse_decimal(entry.quantity) * sign
         assets[asset.id] = asset
 
-    lot_rows = session.scalars(select(CostLot).where(CostLot.voided.is_(False))).all()
     cost_basis: dict[str, int] = {}
     lot_quantities: dict[str, Decimal] = {}
     complete: dict[str, bool] = {}
-    for lot in lot_rows:
-        cost_basis[lot.asset_id] = cost_basis.get(lot.asset_id, 0) + lot.remaining_basis_myr
+    root_lots = session.scalars(select(CostLot).where(CostLot.parent_lot_id.is_(None))).all()
+    for lot in root_lots:
+        event = session.get(TransactionEvent, lot.source_event_id)
+        if event is None or not event_effective_at(session, event, as_of):
+            continue
+        cost_basis[lot.asset_id] = cost_basis.get(lot.asset_id, 0) + lot.basis_myr
         lot_quantities[lot.asset_id] = lot_quantities.get(lot.asset_id, Decimal(0)) + parse_decimal(
-            lot.remaining_quantity
+            lot.original_quantity
         )
         complete[lot.asset_id] = complete.get(lot.asset_id, True) and lot.basis_status == "KNOWN"
+        assets[lot.asset_id] = lot.asset
 
     realized: dict[str, int] = {}
-    for disposal, lot in session.execute(
-        select(LotDisposal, CostLot)
-        .join(CostLot, CostLot.id == LotDisposal.cost_lot_id)
-        .where(LotDisposal.reversed.is_(False))
-    ):
+    disposal_rows = session.execute(
+        select(LotDisposal, CostLot).join(CostLot, CostLot.id == LotDisposal.cost_lot_id)
+    )
+    for disposal, lot in disposal_rows:
+        event = session.get(TransactionEvent, disposal.event_id)
+        if event is None or not event_effective_at(session, event, as_of):
+            continue
+        quantity = parse_decimal(disposal.quantity)
+        cost_basis[lot.asset_id] = cost_basis.get(lot.asset_id, 0) - disposal.basis_myr
+        lot_quantities[lot.asset_id] = lot_quantities.get(lot.asset_id, Decimal(0)) - quantity
         realized[lot.asset_id] = realized.get(lot.asset_id, 0) + disposal.realized_gain_loss_myr
         assets[lot.asset_id] = lot.asset
 
     myr_asset = session.scalar(select(Asset).where(Asset.symbol == "MYR", Asset.chain.is_(None)))
-    rates: dict[str, str] = {}
+    rates: dict[str, RateSnapshot] = {}
     if myr_asset:
-        for rate in session.scalars(
+        statement = (
             select(RateSnapshot)
             .where(RateSnapshot.quote_asset_id == myr_asset.id)
             .order_by(RateSnapshot.observed_at.desc())
-        ):
-            rates.setdefault(rate.base_asset_id, rate.rate)
-        rates[myr_asset.id] = "1"
+        )
+        if as_of is not None:
+            statement = statement.where(RateSnapshot.observed_at < as_of)
+        for rate in session.scalars(statement):
+            rates.setdefault(rate.base_asset_id, rate)
 
     positions: list[dict[str, str | bool | None]] = []
     for asset_id in sorted(set(quantities) | set(realized), key=lambda item: assets[item].symbol):
         quantity = quantities.get(asset_id, Decimal(0))
         basis = cost_basis.get(asset_id, 0)
-        rate = rates.get(asset_id)
+        rate_snapshot = rates.get(asset_id)
+        rate = "1" if myr_asset and asset_id == myr_asset.id else rate_snapshot.rate if rate_snapshot else None
         market_value = myr_to_micros(quantity * parse_decimal(rate)) if rate is not None else None
         average = Decimal(basis) / MYR_MICROS / quantity if quantity > 0 else None
         basis_complete = complete.get(asset_id, quantity == 0) and lot_quantities.get(asset_id, Decimal(0)) == quantity
@@ -400,6 +425,11 @@ def portfolio_positions(session: Session) -> list[dict[str, str | bool | None]]:
                 "cost_basis_myr": micros_to_myr(basis),
                 "average_cost_myr": canonical_decimal(average) if average is not None else None,
                 "market_rate_myr": rate,
+                "market_rate_source": (
+                    rate_snapshot.source if rate_snapshot else "Fixed reporting currency" if rate else None
+                ),
+                "market_rate_observed_at": rate_snapshot.observed_at if rate_snapshot else None,
+                "market_rate_confidence": rate_snapshot.confidence if rate_snapshot else "EXACT" if rate else None,
                 "market_value_myr": micros_to_myr(market_value) if market_value is not None else None,
                 "unrealized_gain_loss_myr": micros_to_myr(market_value - basis) if market_value is not None else None,
                 "realized_gain_loss_myr": micros_to_myr(realized.get(asset_id, 0)),

@@ -810,6 +810,179 @@ select:focus {
   font-size: 12px;
 }
 
+.reports-center {
+  max-width: 1120px;
+}
+
+.report-tabs {
+  padding: 8px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.report-tabs button {
+  padding: 9px 13px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.report-tabs button.active {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.report-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 160px auto auto;
+  align-items: end;
+  gap: 14px;
+}
+
+.report-controls h2,
+.report-controls p {
+  margin-bottom: 0;
+}
+
+.quality {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.leakage-panel .section-title > strong {
+  font: 500 25px/1 Georgia, serif;
+}
+
+.leakage-summary {
+  display: flex;
+  gap: 8px;
+}
+
+.leakage-summary > span {
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: #f5f7f4;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.leakage-summary strong {
+  margin-left: 5px;
+  color: var(--ink);
+}
+
+.snapshot-list > div:not(.section-title) {
+  padding: 10px 0;
+  display: grid;
+  grid-template-columns: 90px 1fr minmax(240px, 2fr);
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+}
+
+.snapshot-list code {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+}
+
+.journey-grid,
+.comparison-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.journey-card {
+  min-width: 0;
+}
+
+.journey-steps {
+  margin-top: 16px;
+  display: grid;
+  gap: 7px;
+}
+
+.journey-steps > div {
+  padding: 8px;
+  display: grid;
+  gap: 3px;
+  border-radius: 7px;
+  background: #f5f7f4;
+  font-size: 9px;
+}
+
+.journey-steps > div > span {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.journey-steps small {
+  color: var(--muted);
+}
+
+.comparison-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.comparison-path {
+  margin: 8px 0 0;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.comparison-path legend {
+  padding: 0 7px;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.comparison-result {
+  position: relative;
+}
+
+.comparison-result > strong {
+  margin: 18px 0 5px;
+  display: block;
+  font: 500 30px/1 Georgia, serif;
+}
+
+.comparison-result p,
+.comparison-result small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.comparison-result.winner {
+  border-color: var(--green);
+  box-shadow: inset 0 3px 0 var(--green);
+}
+
+.best-path {
+  margin-top: 14px;
+  padding: 6px 8px;
+  display: inline-block;
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 9px;
+  font-weight: 800;
+}
+
 @media (max-width: 1100px) {
   .metric-grid,
   .account-cards {
@@ -818,8 +991,14 @@ select:focus {
 
   .dashboard-grid,
   .transactions-layout,
-  .card-cost-grid {
+  .card-cost-grid,
+  .journey-grid,
+  .comparison-results {
     grid-template-columns: 1fr;
+  }
+
+  .report-controls {
+    grid-template-columns: 1fr 160px auto auto;
   }
 
   .detail-panel {
@@ -864,7 +1043,13 @@ select:focus {
   .account-cards,
   .split-forms,
   form,
-  .fee-fields {
+  .fee-fields,
+  .report-controls,
+  .comparison-path {
+    grid-template-columns: 1fr;
+  }
+
+  .snapshot-list > div:not(.section-title) {
     grid-template-columns: 1fr;
   }
 

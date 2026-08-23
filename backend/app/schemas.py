@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.enums import AccountType, EntryDirection, EventType, FeeTreatment
+from app.enums import AccountChannel, AccountType, EntryDirection, EventType, FeeTreatment
 from app.money import canonical_decimal, parse_decimal
 
 
@@ -22,6 +22,7 @@ class AssetCreate(BaseModel):
 class AccountCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     account_type: AccountType
+    channel_type: AccountChannel = AccountChannel.OTHER
     provider: str | None = Field(default=None, max_length=80)
 
 
@@ -120,6 +121,7 @@ class AccountRead(BaseModel):
     id: str
     name: str
     account_type: str
+    channel_type: str
     provider: str | None
     closed: bool
     balances: list[BalanceRead] = Field(default_factory=list)
@@ -261,6 +263,7 @@ class RateCreate(BaseModel):
     source: str = Field(min_length=1, max_length=120)
     rate_type: str = Field(default="MARKET", max_length=32)
     path: str | None = None
+    confidence: str = Field(default="EXACT", pattern="^(EXACT|HIGH|ESTIMATED|MISSING_INPUT)$")
 
     @field_validator("rate")
     @classmethod
@@ -294,6 +297,9 @@ class PortfolioPositionRead(BaseModel):
     cost_basis_myr: str
     average_cost_myr: str | None
     market_rate_myr: str | None
+    market_rate_source: str | None
+    market_rate_observed_at: str | None
+    market_rate_confidence: str | None
     market_value_myr: str | None
     unrealized_gain_loss_myr: str | None
     realized_gain_loss_myr: str
@@ -443,6 +449,80 @@ class RewardCreditCreate(BaseModel):
         normalized = canonical_decimal(value)
         if parse_decimal(normalized) <= 0:
             raise ValueError("credited values must be positive")
+        return normalized
+
+
+class JourneyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    journey_type: str = Field(default="FUNDS", pattern="^(FUNDS|PAYMENT|WITHDRAWAL)$")
+    status: str = Field(default="DRAFT", pattern="^(DRAFT|CONFIRMED|COMPLETED)$")
+    allocation_method: str = Field(min_length=1, max_length=160)
+    confidence: str = Field(default="EXACT", pattern="^(EXACT|HIGH|ESTIMATED|MISSING_INPUT)$")
+    notes: str = Field(default="", max_length=500)
+
+
+class JourneyAllocationCreate(BaseModel):
+    asset_id: str
+    allocation_role: str = Field(pattern="^(INPUT|INTERMEDIATE|OUTPUT|COST)$")
+    quantity: str
+    value_myr: str
+    source: str = Field(min_length=1, max_length=160)
+    confidence: str = Field(default="EXACT", pattern="^(EXACT|HIGH|ESTIMATED|MISSING_INPUT)$")
+
+    @field_validator("quantity", "value_myr")
+    @classmethod
+    def validate_allocation_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("journey allocation values must be positive")
+        return normalized
+
+
+class JourneyEventCreate(BaseModel):
+    event_id: str
+    relation_type: str = Field(default="STEP", min_length=1, max_length=40)
+    sequence: int = Field(default=0, ge=0)
+    allocations: list[JourneyAllocationCreate] = Field(min_length=1)
+
+
+class ChannelPathCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    path_type: str = Field(pattern="^(PAYMENT|WITHDRAWAL)$")
+    mode: str = Field(pattern="^(ACTUAL|SIMULATED)$")
+    explicit_cost_myr: str
+    derived_deviation_myr: str
+    cashback_myr: str = "0"
+    source: str = Field(min_length=1, max_length=160)
+    confidence: str = Field(default="EXACT", pattern="^(EXACT|HIGH|ESTIMATED|MISSING_INPUT)$")
+
+    @field_validator("explicit_cost_myr", "cashback_myr")
+    @classmethod
+    def validate_nonnegative_path_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) < 0:
+            raise ValueError("explicit costs and cashback must be non-negative")
+        return normalized
+
+    @field_validator("derived_deviation_myr")
+    @classmethod
+    def validate_derived_deviation(cls, value: str) -> str:
+        return canonical_decimal(value)
+
+
+class ChannelComparisonCreate(BaseModel):
+    amount_myr: str
+    compared_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    reference_rate: str
+    reference_source: str = Field(min_length=1, max_length=160)
+    cashback_eligible: bool = False
+    paths: list[ChannelPathCreate] = Field(min_length=2)
+
+    @field_validator("amount_myr", "reference_rate")
+    @classmethod
+    def validate_comparison_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("comparison amount and reference rate must be positive")
         return normalized
 
 

@@ -1,12 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './api'
-import type { Account, Asset, CardCost, CardRecord, FeeReport, PortfolioPosition, Summary, TransactionEvent } from './api'
+import type {
+  Account,
+  Asset,
+  CardCost,
+  CardRecord,
+  ChannelComparison,
+  FeeReport,
+  JourneyReport,
+  MonthlyReport,
+  PortfolioPosition,
+  ReportSnapshot,
+  Summary,
+  TransactionEvent,
+} from './api'
 import CardCenter from './CardCenter'
 import { formatMyr, localDateTimeValue } from './format'
+import ReportsCenter from './ReportsCenter'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards'
+type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -14,6 +28,11 @@ const emptySummary: Summary = {
   expense_myr: '0',
   gross_spending_myr: '0',
   net_spending_myr: '0',
+}
+
+function reportingMonth() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
 function App() {
@@ -26,6 +45,9 @@ function App() {
   const [feeReport, setFeeReport] = useState<FeeReport>({ total_myr: '0', components: [] })
   const [cards, setCards] = useState<CardRecord[]>([])
   const [cardCosts, setCardCosts] = useState<CardCost[]>([])
+  const [monthly, setMonthly] = useState<MonthlyReport | null>(null)
+  const [journeys, setJourneys] = useState<JourneyReport[]>([])
+  const [snapshots, setSnapshots] = useState<ReportSnapshot[]>([])
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -33,7 +55,19 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextAssets, nextAccounts, nextEvents, nextSummary, nextPortfolio, nextFees, nextCards, nextCardCosts] = await Promise.all([
+      const [
+        nextAssets,
+        nextAccounts,
+        nextEvents,
+        nextSummary,
+        nextPortfolio,
+        nextFees,
+        nextCards,
+        nextCardCosts,
+        nextMonthly,
+        nextJourneys,
+        nextSnapshots,
+      ] = await Promise.all([
         api.assets(),
         api.accounts(),
         api.events(),
@@ -42,6 +76,9 @@ function App() {
         api.fees(),
         api.cards(),
         api.cardCosts(),
+        api.monthly(reportingMonth()),
+        api.journeys(),
+        api.snapshots(),
       ])
       setAssets(nextAssets)
       setAccounts(nextAccounts)
@@ -51,6 +88,9 @@ function App() {
       setFeeReport(nextFees)
       setCards(nextCards)
       setCardCosts(nextCardCosts)
+      setMonthly(nextMonthly)
+      setJourneys(nextJourneys)
+      setSnapshots(nextSnapshots)
       setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? null : null))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load CryptoSpend')
@@ -90,6 +130,46 @@ function App() {
     }
   }
 
+  async function runReportAction(action: () => Promise<unknown>) {
+    setBusy(true)
+    setError('')
+    try {
+      await action()
+      const [nextJourneys, nextSnapshots] = await Promise.all([api.journeys(), api.snapshots()])
+      setJourneys(nextJourneys)
+      setSnapshots(nextSnapshots)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Report action failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function loadMonthly(month: string) {
+    setBusy(true)
+    setError('')
+    try {
+      setMonthly(await api.monthly(month))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to load monthly report')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function compareChannels(payload: Record<string, unknown>): Promise<ChannelComparison> {
+    setBusy(true)
+    setError('')
+    try {
+      return await api.compareChannels(payload)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to compare channels')
+      throw reason
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const ready = assets.length > 0 && accounts.length > 0
 
   return (
@@ -110,6 +190,7 @@ function App() {
               ['add', 'Add transaction'],
               ['portfolio', 'Portfolio'],
               ['cards', 'Card costs'],
+              ['reports', 'Reports'],
               ['accounts', 'Accounts'],
             ] as [View, string][]
           ).map(([key, label]) => (
@@ -196,13 +277,27 @@ function App() {
             onCreditReward={(id, payload) => runAction(() => api.creditReward(id, payload))}
           />
         )}
+        {ready && view === 'reports' && (
+          <ReportsCenter
+            assets={assets}
+            events={events}
+            monthly={monthly}
+            journeys={journeys}
+            snapshots={snapshots}
+            busy={busy}
+            onLoadMonth={loadMonthly}
+            onSnapshot={(month) => runReportAction(() => api.createSnapshot(month))}
+            onCreateJourney={(payload) => runReportAction(() => api.createJourney(payload))}
+            onAllocate={(id, payload) => runReportAction(() => api.allocateJourneyEvent(id, payload))}
+            onCompare={compareChannels}
+          />
+        )}
         {ready && view === 'accounts' && (
           <Accounts
             assets={assets}
             accounts={accounts}
             busy={busy}
-            onCreateAccount={(payload) => runAction(() => api.createAccount(payload))
-            }
+            onCreateAccount={(payload) => runAction(() => api.createAccount(payload))}
             onCreateAsset={(payload) => runAction(() => api.createAsset(payload))}
           />
         )}
@@ -720,6 +815,7 @@ function Portfolio({ positions, feeReport, assets, busy, onRate }: {
       observed_at: new Date(String(data.get('observed_at'))).toISOString(),
       source: String(data.get('source')),
       rate_type: 'MARKET',
+      confidence: String(data.get('confidence')),
     })
   }
 
@@ -760,6 +856,7 @@ function Portfolio({ positions, feeReport, assets, busy, onRate }: {
           <label>Rate<input name="rate" inputMode="decimal" placeholder="17000" required /><small>quote asset / base asset</small></label>
           <label>Observed at<input name="observed_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label>
           <label>Source<input name="source" defaultValue="Manual market reference" required /></label>
+          <label>Confidence<select name="confidence" defaultValue="EXACT"><option>EXACT</option><option>HIGH</option><option>ESTIMATED</option><option>MISSING_INPUT</option></select></label>
           <button className="primary" disabled={busy}>Save snapshot</button>
         </form>
       </section>
@@ -771,11 +868,17 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
-  onCreateAccount: (payload: { name: string; account_type: string; provider: string | null }) => Promise<void>
+  onCreateAccount: (payload: {
+    name: string
+    account_type: string
+    channel_type: string
+    provider: string | null
+  }) => Promise<void>
   onCreateAsset: (payload: { symbol: string; name: string; decimals: number }) => Promise<void>
 }) {
   const [accountName, setAccountName] = useState('')
   const [accountType, setAccountType] = useState('ASSET')
+  const [channelType, setChannelType] = useState('OTHER')
   const [provider, setProvider] = useState('')
   const [symbol, setSymbol] = useState('')
   const [assetName, setAssetName] = useState('')
@@ -793,7 +896,7 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
             <article key={account.id}>
               <span className="account-type">{account.account_type}</span>
               <h3>{account.name}</h3>
-              <small>{account.provider ?? 'Local/manual'}</small>
+              <small>{account.channel_type.replaceAll('_', ' ')} · {account.provider ?? 'Local/manual'}</small>
               <div className="account-balances">
                 {account.balances.map((balance) => (
                   <div key={balance.asset_id}>
@@ -816,7 +919,12 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
       <section className="split-forms">
         <form className="panel compact-form" onSubmit={(event) => {
           event.preventDefault()
-          void onCreateAccount({ name: accountName, account_type: accountType, provider: provider || null }).then(() => {
+          void onCreateAccount({
+            name: accountName,
+            account_type: accountType,
+            channel_type: channelType,
+            provider: provider || null,
+          }).then(() => {
             setAccountName('')
             setProvider('')
           })
@@ -825,6 +933,9 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
           <label>Name<input value={accountName} onChange={(event) => setAccountName(event.target.value)} required /></label>
           <label>Type<select value={accountType} onChange={(event) => setAccountType(event.target.value)}>
             {['ASSET', 'LIABILITY', 'INCOME', 'EXPENSE', 'EQUITY', 'GAIN_LOSS', 'CLEARING'].map((type) => <option key={type}>{type}</option>)}
+          </select></label>
+          <label>Spending channel<select value={channelType} onChange={(event) => setChannelType(event.target.value)}>
+            {['OTHER', 'BANK', 'CASH', 'EWALLET', 'EXCHANGE', 'CRYPTO_WALLET', 'CARD'].map((type) => <option key={type}>{type}</option>)}
           </select></label>
           <label>Provider<input value={provider} onChange={(event) => setProvider(event.target.value)} placeholder="Optional" /></label>
           <button className="primary" disabled={busy}>Add account</button>

@@ -19,6 +19,7 @@ export type Account = {
   id: string
   name: string
   account_type: string
+  channel_type: string
   provider: string | null
   closed: boolean
   balances: Balance[]
@@ -81,6 +82,9 @@ export type PortfolioPosition = {
   cost_basis_myr: string
   average_cost_myr: string | null
   market_rate_myr: string | null
+  market_rate_source: string | null
+  market_rate_observed_at: string | null
+  market_rate_confidence: string | null
   market_value_myr: string | null
   unrealized_gain_loss_myr: string | null
   realized_gain_loss_myr: string
@@ -145,6 +149,116 @@ export type CardCost = {
   fees: { component_type: string; value_myr: string; included_in_funding_amount: boolean }[]
 }
 
+export type SpendingChannel = {
+  channel_type: string
+  gross_spending_myr: string
+  refunds_myr: string
+  cashback_myr: string
+  net_spending_myr: string
+  source: string
+  calculation_method: string
+  confidence: string
+}
+
+export type FeeLeakage = {
+  explicit_myr: string
+  derived_myr: string
+  total_leakage_myr: string
+  components: {
+    component_type: string
+    value_myr: string
+    source_kind: string
+    source: string
+    calculation_method: string
+    confidence: string
+  }[]
+}
+
+export type MonthlyReport = {
+  month: string
+  timezone: string
+  period_start: string
+  period_end: string
+  summary: Summary
+  fees: FeeReport
+  fee_leakage: FeeLeakage
+  channels: SpendingChannel[]
+  portfolio: PortfolioPosition[]
+}
+
+export type JourneyAllocation = {
+  id: string
+  event_id: string
+  event_type: string
+  event_description: string
+  occurred_at: string
+  relation_type: string
+  sequence: number
+  asset_id: string
+  asset_symbol: string
+  allocation_role: string
+  quantity: string
+  value_myr: string
+  source: string
+  confidence: string
+  active_at_query: boolean
+}
+
+export type JourneyReport = {
+  id: string
+  name: string
+  journey_type: string
+  status: string
+  allocation_method: string
+  notes: string
+  gross_input_myr: string
+  net_output_myr: string
+  explicit_cost_myr: string
+  derived_deviation_myr: string
+  total_path_cost_myr: string
+  calculation_method: string
+  source: string
+  confidence: string
+  as_of: string | null
+  allocations: JourneyAllocation[]
+}
+
+export type ReportSnapshot = {
+  id: string
+  snapshot_type: string
+  period_key: string
+  period_start: string
+  as_of: string
+  timezone: string
+  checksum: string
+  created_at: string
+}
+
+export type ChannelComparison = {
+  fixed_conditions: {
+    amount_myr: string
+    compared_at: string
+    reference_rate: string
+    reference_source: string
+    cashback_eligible: boolean
+  }
+  paths: {
+    name: string
+    path_type: string
+    mode: string
+    explicit_cost_myr: string
+    derived_deviation_myr: string
+    cashback_myr: string
+    effective_cost_myr: string
+    net_value_myr: string
+    cost_rate_percent: string
+    source: string
+    confidence: string
+    is_lowest_cost: boolean
+  }[]
+  note: string
+}
+
 const apiRoot = import.meta.env.VITE_API_URL ?? '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -164,12 +278,21 @@ export const api = {
   accounts: () => request<Account[]>('/accounts'),
   events: () => request<TransactionEvent[]>('/events'),
   summary: () => request<Summary>('/reports/summary'),
-  portfolio: () => request<PortfolioPosition[]>('/reports/portfolio'),
+  portfolio: (asOf?: string) =>
+    request<PortfolioPosition[]>(`/reports/portfolio${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''}`),
   fees: () => request<FeeReport>('/reports/fees'),
   cards: () => request<CardRecord[]>('/cards'),
   cardCosts: () => request<CardCost[]>('/reports/card-costs'),
+  monthly: (month: string) => request<MonthlyReport>(`/reports/monthly?month=${encodeURIComponent(month)}`),
+  snapshots: () => request<ReportSnapshot[]>('/reports/monthly-snapshots'),
+  journeys: () => request<JourneyReport[]>('/journeys'),
   onboard: () => request('/onboarding', { method: 'POST', body: '{}' }),
-  createAccount: (payload: { name: string; account_type: string; provider: string | null }) =>
+  createAccount: (payload: {
+    name: string
+    account_type: string
+    channel_type?: string
+    provider: string | null
+  }) =>
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
   createAsset: (payload: { symbol: string; name: string; decimals: number }) =>
     request<Asset>('/assets', { method: 'POST', body: JSON.stringify(payload) }),
@@ -193,6 +316,20 @@ export const api = {
     request<Reward>(`/cards/${id}/rewards`, { method: 'POST', body: JSON.stringify(payload) }),
   creditReward: (id: string, payload: Record<string, unknown>) =>
     request<Reward>(`/rewards/${id}/credit`, { method: 'POST', body: JSON.stringify(payload) }),
+  createJourney: (payload: Record<string, unknown>) =>
+    request<JourneyReport>('/journeys', { method: 'POST', body: JSON.stringify(payload) }),
+  allocateJourneyEvent: (id: string, payload: Record<string, unknown>) =>
+    request<JourneyReport>(`/journeys/${id}/events`, { method: 'POST', body: JSON.stringify(payload) }),
+  createSnapshot: (month: string) =>
+    request<ReportSnapshot & { report: MonthlyReport }>(
+      `/reports/monthly-snapshots?month=${encodeURIComponent(month)}`,
+      { method: 'POST' },
+    ),
+  compareChannels: (payload: Record<string, unknown>) =>
+    request<ChannelComparison>('/reports/channel-comparison', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   reverseEvent: (id: string, reason: string) =>
     request<TransactionEvent>(`/events/${id}/reverse`, {
       method: 'POST',

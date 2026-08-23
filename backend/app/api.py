@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -19,7 +19,7 @@ from app.cards import (
 )
 from app.cost_basis import portfolio_positions
 from app.database import get_session
-from app.enums import AccountType
+from app.enums import AccountChannel, AccountType
 from app.ledger import (
     DomainError,
     account_balances,
@@ -38,14 +38,28 @@ from app.models import (
     CardHold,
     CardTransaction,
     CostLot,
-    FeeComponent,
+    Journey,
     LedgerEntry,
     RateSnapshot,
     Reward,
     Setting,
     TransactionEvent,
 )
-from app.money import micros_to_myr
+from app.money import micros_to_myr, myr_to_micros
+from app.reporting import (
+    add_journey_event,
+    compare_channels,
+    create_journey,
+    create_monthly_snapshot,
+    fee_leakage_data,
+    fee_report_data,
+    get_journey,
+    get_snapshot,
+    journey_report,
+    list_snapshots,
+    monthly_report,
+    spending_by_channel,
+)
 from app.schemas import (
     AccountCreate,
     AccountRead,
@@ -54,9 +68,12 @@ from app.schemas import (
     CardAuthorizationCreate,
     CardRefundCreate,
     CardSettlementCreate,
+    ChannelComparisonCreate,
     CostLotRead,
     EventDraftCreate,
     EventRead,
+    JourneyCreate,
+    JourneyEventCreate,
     ManualEventCreate,
     OnboardingCreate,
     PortfolioPositionRead,
@@ -157,6 +174,7 @@ def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
             "id": account.id,
             "name": account.name,
             "account_type": account.account_type,
+            "channel_type": account.channel_type,
             "provider": account.provider,
             "closed": account.closed,
             "balances": balances.get(account.id, []),
@@ -168,7 +186,12 @@ def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
 
 @router.post("/accounts", response_model=AccountRead, status_code=201)
 def create_account(payload: AccountCreate, session: Session = Depends(get_session)) -> dict:
-    account = Account(name=payload.name.strip(), account_type=payload.account_type.value, provider=payload.provider)
+    account = Account(
+        name=payload.name.strip(),
+        account_type=payload.account_type.value,
+        channel_type=payload.channel_type.value,
+        provider=payload.provider,
+    )
     session.add(account)
     try:
         session.commit()
@@ -179,6 +202,7 @@ def create_account(payload: AccountCreate, session: Session = Depends(get_sessio
         "id": account.id,
         "name": account.name,
         "account_type": account.account_type,
+        "channel_type": account.channel_type,
         "provider": account.provider,
         "closed": account.closed,
         "balances": [],
@@ -208,9 +232,11 @@ def onboarding(payload: OnboardingCreate, session: Session = Depends(get_session
             session.add(Asset(symbol=symbol, name=name, decimals=decimals))
 
     requested_accounts = payload.accounts or [
-        AccountCreate(name="Bank", account_type=AccountType.ASSET),
-        AccountCreate(name="Cash", account_type=AccountType.ASSET),
-        AccountCreate(name="Crypto Wallet", account_type=AccountType.ASSET),
+        AccountCreate(name="Bank", account_type=AccountType.ASSET, channel_type=AccountChannel.BANK),
+        AccountCreate(name="Cash", account_type=AccountType.ASSET, channel_type=AccountChannel.CASH),
+        AccountCreate(
+            name="Crypto Wallet", account_type=AccountType.ASSET, channel_type=AccountChannel.CRYPTO_WALLET
+        ),
         AccountCreate(name="Salary", account_type=AccountType.INCOME),
         AccountCreate(name="Other Income", account_type=AccountType.INCOME),
         AccountCreate(name="General Expense", account_type=AccountType.EXPENSE),
@@ -225,7 +251,14 @@ def onboarding(payload: OnboardingCreate, session: Session = Depends(get_session
     for item in requested_accounts:
         identity = (item.name.strip(), item.account_type.value, item.provider)
         if identity not in existing_accounts:
-            session.add(Account(name=identity[0], account_type=identity[1], provider=identity[2]))
+            session.add(
+                Account(
+                    name=identity[0],
+                    account_type=identity[1],
+                    channel_type=item.channel_type.value,
+                    provider=identity[2],
+                )
+            )
     add_audit(session, "SETTINGS_INITIALIZED", details={"timezone": setting.timezone})
     session.commit()
     session.refresh(setting)
@@ -319,7 +352,7 @@ def create_rate(payload: RateCreate, session: Session = Depends(get_session)) ->
         source=payload.source,
         rate_type=payload.rate_type.upper(),
         path=payload.path,
-        confidence="EXACT",
+        confidence=payload.confidence,
     )
     session.add(rate)
     session.commit()
@@ -502,22 +535,31 @@ def income_expense(
 
 
 @router.get("/reports/portfolio", response_model=list[PortfolioPositionRead])
-def portfolio(session: Session = Depends(get_session)) -> list[dict[str, str | bool | None]]:
-    return portfolio_positions(session)
+def portfolio(
+    as_of: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> list[dict[str, str | bool | None]]:
+    return portfolio_positions(session, utc_text(as_of) if as_of else None)
 
 
 @router.get("/reports/fees")
-def fees_report(session: Session = Depends(get_session)) -> dict:
-    rows = session.execute(
-        select(FeeComponent.component_type, func.sum(FeeComponent.value_myr))
-        .where(FeeComponent.reversed.is_(False))
-        .group_by(FeeComponent.component_type)
-        .order_by(FeeComponent.component_type)
-    ).all()
-    components = [
-        {"component_type": component_type, "value_myr": micros_to_myr(value)} for component_type, value in rows
-    ]
-    return {"total_myr": micros_to_myr(sum(value for _, value in rows)), "components": components}
+def fees_report(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    start_text, end_text = report_window(start, end)
+    return fee_report_data(session, start_text, end_text)
+
+
+@router.get("/reports/fee-leakage")
+def fee_leakage_report(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    start_text, end_text = report_window(start, end)
+    return fee_leakage_data(session, start_text, end_text)
 
 
 @router.get("/reports/card-costs")
@@ -534,10 +576,84 @@ def summary(
     period_start, period_end = report_window(start, end)
     period = report_totals(session, period_start, period_end)
     lifetime = report_totals(session, end=period_end)
+    channels = spending_by_channel(
+        session,
+        period_start or "0001-01-01T00:00:00+00:00",
+        period_end or "9999-12-31T23:59:59+00:00",
+    )
+    gross_spending = sum(myr_to_micros(row["gross_spending_myr"]) for row in channels)
+    net_spending = sum(myr_to_micros(row["net_spending_myr"]) for row in channels)
     return SummaryRead(
         net_worth_myr=micros_to_myr(lifetime["assets"] - lifetime["liabilities"]),
         income_myr=micros_to_myr(period["income"]),
         expense_myr=micros_to_myr(period["expense"]),
-        gross_spending_myr=micros_to_myr(period["expense"]),
-        net_spending_myr=micros_to_myr(period["expense"]),
+        gross_spending_myr=micros_to_myr(gross_spending),
+        net_spending_myr=micros_to_myr(net_spending),
     )
+
+
+@router.post("/journeys", status_code=201)
+def create_funds_journey(payload: JourneyCreate, session: Session = Depends(get_session)) -> dict:
+    journey = create_journey(session, payload)
+    session.commit()
+    return journey_report(session, journey.id)
+
+
+@router.get("/journeys")
+def list_funds_journeys(session: Session = Depends(get_session)) -> list[dict]:
+    journey_ids = session.scalars(select(Journey.id).order_by(Journey.created_at.desc())).all()
+    return [journey_report(session, journey_id) for journey_id in journey_ids]
+
+
+@router.post("/journeys/{journey_id}/events", status_code=201)
+def allocate_journey_event(
+    journey_id: str,
+    payload: JourneyEventCreate,
+    session: Session = Depends(get_session),
+) -> dict:
+    journey = get_journey(session, journey_id)
+    add_journey_event(session, journey, payload)
+    session.commit()
+    return journey_report(session, journey_id)
+
+
+@router.get("/reports/journeys/{journey_id}")
+def funds_journey_report(
+    journey_id: str,
+    as_of: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    return journey_report(session, journey_id, utc_text(as_of) if as_of else None)
+
+
+@router.get("/reports/monthly")
+def get_monthly_report(
+    month: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    session: Session = Depends(get_session),
+) -> dict:
+    return monthly_report(session, month)
+
+
+@router.post("/reports/monthly-snapshots", status_code=201)
+def post_monthly_snapshot(
+    month: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    session: Session = Depends(get_session),
+) -> dict:
+    snapshot = create_monthly_snapshot(session, month)
+    session.commit()
+    return snapshot
+
+
+@router.get("/reports/monthly-snapshots")
+def get_monthly_snapshots(session: Session = Depends(get_session)) -> list[dict[str, str]]:
+    return list_snapshots(session)
+
+
+@router.get("/reports/monthly-snapshots/{snapshot_id}")
+def monthly_snapshot_detail(snapshot_id: str, session: Session = Depends(get_session)) -> dict:
+    return get_snapshot(session, snapshot_id)
+
+
+@router.post("/reports/channel-comparison")
+def channel_comparison(payload: ChannelComparisonCreate) -> dict:
+    return compare_channels(payload)

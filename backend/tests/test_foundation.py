@@ -37,7 +37,7 @@ def test_database_migrates_backs_up_and_restores(tmp_path) -> None:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
         connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
         connection.execute("INSERT INTO sample VALUES ('preserved')")
-    assert revision == ("0003_card_workflows",)
+    assert revision == ("0004_reporting_journeys",)
 
     backup = backup_database(database, tmp_path / "backup.db")
     restored = restore_database(backup, tmp_path / "restored.db")

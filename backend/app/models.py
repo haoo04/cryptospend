@@ -49,6 +49,7 @@ class Account(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(160))
     account_type: Mapped[str] = mapped_column(String(32), index=True)
+    channel_type: Mapped[str] = mapped_column(String(24), default="OTHER", server_default="OTHER", index=True)
     provider: Mapped[str | None] = mapped_column(String(80))
     closed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
@@ -428,4 +429,92 @@ class Reward(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('PENDING','CREDITED','REVERSED','EXPIRED')", name="reward_status_valid"),
+    )
+
+
+class Journey(Base):
+    __tablename__ = "journeys"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(160))
+    journey_type: Mapped[str] = mapped_column(String(24), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
+    allocation_method: Mapped[str] = mapped_column(String(160))
+    confidence: Mapped[str] = mapped_column(String(32))
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+
+    event_links: Mapped[list[JourneyEventLink]] = relationship(
+        back_populates="journey", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    __table_args__ = (
+        CheckConstraint("journey_type IN ('FUNDS','PAYMENT','WITHDRAWAL')", name="journey_type_valid"),
+        CheckConstraint("status IN ('DRAFT','CONFIRMED','COMPLETED')", name="journey_status_valid"),
+        CheckConstraint(
+            "confidence IN ('EXACT','HIGH','ESTIMATED','MISSING_INPUT')", name="journey_confidence_valid"
+        ),
+    )
+
+
+class JourneyEventLink(Base):
+    __tablename__ = "journey_event_links"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    journey_id: Mapped[str] = mapped_column(ForeignKey("journeys.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("transaction_events.id"), index=True)
+    relation_type: Mapped[str] = mapped_column(String(40), default="STEP")
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+
+    journey: Mapped[Journey] = relationship(back_populates="event_links")
+    event: Mapped[TransactionEvent] = relationship()
+    allocations: Mapped[list[JourneyAllocation]] = relationship(
+        back_populates="event_link", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    __table_args__ = (UniqueConstraint("journey_id", "event_id", name="uq_journey_event"),)
+
+
+class JourneyAllocation(Base):
+    __tablename__ = "journey_allocations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    event_link_id: Mapped[str] = mapped_column(ForeignKey("journey_event_links.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"), index=True)
+    allocation_role: Mapped[str] = mapped_column(String(24))
+    quantity: Mapped[str] = mapped_column(Text)
+    value_myr: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(160))
+    confidence: Mapped[str] = mapped_column(String(32))
+
+    event_link: Mapped[JourneyEventLink] = relationship(back_populates="allocations")
+    asset: Mapped[Asset] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "allocation_role IN ('INPUT','INTERMEDIATE','OUTPUT','COST')", name="journey_allocation_role_valid"
+        ),
+        CheckConstraint("value_myr >= 0", name="journey_allocation_value_nonnegative"),
+        CheckConstraint(
+            "confidence IN ('EXACT','HIGH','ESTIMATED','MISSING_INPUT')",
+            name="journey_allocation_confidence_valid",
+        ),
+    )
+
+
+class ReportSnapshot(Base):
+    __tablename__ = "report_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    snapshot_type: Mapped[str] = mapped_column(String(24), index=True)
+    period_key: Mapped[str] = mapped_column(String(16), index=True)
+    period_start: Mapped[str] = mapped_column(String(40))
+    as_of: Mapped[str] = mapped_column(String(40), index=True)
+    timezone: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+
+    __table_args__ = (
+        CheckConstraint("snapshot_type IN ('MONTHLY')", name="report_snapshot_type_valid"),
     )

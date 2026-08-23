@@ -11,6 +11,16 @@ class AccountType(StrEnum):
     CLEARING = "CLEARING"
 
 
+class AccountChannel(StrEnum):
+    BANK = "BANK"
+    CASH = "CASH"
+    EWALLET = "EWALLET"
+    EXCHANGE = "EXCHANGE"
+    CRYPTO_WALLET = "CRYPTO_WALLET"
+    CARD = "CARD"
+    OTHER = "OTHER"
+
+
 class EventStatus(StrEnum):
     DRAFT = "DRAFT"
     POSTED = "POSTED"
