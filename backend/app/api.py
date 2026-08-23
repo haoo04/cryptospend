@@ -5,6 +5,18 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.cards import (
+    available_account_balances,
+    card_cost_report,
+    create_authorization,
+    create_refund,
+    create_reward,
+    create_settlement,
+    credit_reward,
+    get_card,
+    release_authorization,
+    reverse_reward,
+)
 from app.cost_basis import portfolio_positions
 from app.database import get_session
 from app.enums import AccountType
@@ -20,13 +32,28 @@ from app.ledger import (
     reverse_event,
     utc_text,
 )
-from app.models import Account, Asset, CostLot, FeeComponent, LedgerEntry, RateSnapshot, Setting, TransactionEvent
+from app.models import (
+    Account,
+    Asset,
+    CardHold,
+    CardTransaction,
+    CostLot,
+    FeeComponent,
+    LedgerEntry,
+    RateSnapshot,
+    Reward,
+    Setting,
+    TransactionEvent,
+)
 from app.money import micros_to_myr
 from app.schemas import (
     AccountCreate,
     AccountRead,
     AssetCreate,
     AssetRead,
+    CardAuthorizationCreate,
+    CardRefundCreate,
+    CardSettlementCreate,
     CostLotRead,
     EventDraftCreate,
     EventRead,
@@ -35,6 +62,8 @@ from app.schemas import (
     PortfolioPositionRead,
     RateCreate,
     ReverseCreate,
+    RewardCreate,
+    RewardCreditCreate,
     SettingsRead,
     SummaryRead,
     TradeCreate,
@@ -122,6 +151,7 @@ def create_asset(payload: AssetCreate, session: Session = Depends(get_session)) 
 @router.get("/accounts", response_model=list[AccountRead])
 def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
     balances = account_balances(session)
+    available = available_account_balances(session, balances)
     return [
         {
             "id": account.id,
@@ -130,6 +160,7 @@ def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
             "provider": account.provider,
             "closed": account.closed,
             "balances": balances.get(account.id, []),
+            "available_balances": available.get(account.id, []),
         }
         for account in session.scalars(select(Account).order_by(Account.account_type, Account.name))
     ]
@@ -151,6 +182,7 @@ def create_account(payload: AccountCreate, session: Session = Depends(get_sessio
         "provider": account.provider,
         "closed": account.closed,
         "balances": [],
+        "available_balances": [],
     }
 
 
@@ -325,6 +357,121 @@ def list_cost_lots(
     ]
 
 
+def card_read(session: Session, card: CardTransaction) -> dict:
+    hold = session.scalar(select(CardHold).where(CardHold.card_transaction_id == card.id))
+    return {
+        "id": card.id,
+        "event_id": card.event_id,
+        "parent_card_transaction_id": card.parent_card_transaction_id,
+        "original_transaction_id": card.original_transaction_id,
+        "provider": card.provider,
+        "external_id": card.external_id,
+        "transaction_type": card.transaction_type,
+        "merchant_name": card.merchant_name,
+        "merchant_amount": card.merchant_amount,
+        "merchant_asset_id": card.merchant_asset_id,
+        "billing_amount": card.billing_amount,
+        "billing_asset_id": card.billing_asset_id,
+        "merchant_value_myr": micros_to_myr(card.merchant_value_myr),
+        "status": card.status,
+        "authorized_at": card.authorized_at,
+        "settled_at": card.settled_at,
+        "hold": {
+            "account_id": hold.account_id,
+            "asset_id": hold.asset_id,
+            "amount": hold.amount,
+            "value_myr": micros_to_myr(hold.value_myr),
+            "status": hold.status,
+        }
+        if hold
+        else None,
+        "rewards": [
+            {
+                "id": reward.id,
+                "asset_id": reward.asset_id,
+                "amount": reward.amount,
+                "status": reward.status,
+                "value_myr": micros_to_myr(reward.value_myr) if reward.value_myr is not None else None,
+            }
+            for reward in card.rewards
+        ],
+    }
+
+
+@router.get("/cards")
+def list_cards(session: Session = Depends(get_session)) -> list[dict]:
+    cards = session.scalars(select(CardTransaction).order_by(CardTransaction.created_at.desc())).all()
+    return [card_read(session, card) for card in cards]
+
+
+@router.post("/cards/authorizations", status_code=201)
+def authorize_card(payload: CardAuthorizationCreate, session: Session = Depends(get_session)) -> dict:
+    card = create_authorization(session, payload)
+    session.commit()
+    return card_read(session, card)
+
+
+@router.post("/cards/{card_id}/reverse-authorization")
+def reverse_card_authorization(card_id: str, session: Session = Depends(get_session)) -> dict:
+    card = release_authorization(session, get_card(session, card_id))
+    session.commit()
+    return card_read(session, card)
+
+
+@router.post("/cards/settlements", status_code=201)
+def settle_card(payload: CardSettlementCreate, session: Session = Depends(get_session)) -> dict:
+    card = create_settlement(session, payload)
+    session.commit()
+    return card_read(session, card)
+
+
+@router.post("/cards/{card_id}/refunds", status_code=201)
+def refund_card(card_id: str, payload: CardRefundCreate, session: Session = Depends(get_session)) -> dict:
+    refund = create_refund(session, get_card(session, card_id), payload)
+    session.commit()
+    return card_read(session, refund)
+
+
+@router.post("/cards/{card_id}/rewards", status_code=201)
+def add_card_reward(card_id: str, payload: RewardCreate, session: Session = Depends(get_session)) -> dict:
+    reward = create_reward(session, get_card(session, card_id), payload)
+    session.commit()
+    return {
+        "id": reward.id,
+        "card_transaction_id": reward.card_transaction_id,
+        "asset_id": reward.asset_id,
+        "amount": reward.amount,
+        "status": reward.status,
+    }
+
+
+@router.post("/rewards/{reward_id}/credit")
+def credit_card_reward(
+    reward_id: str, payload: RewardCreditCreate, session: Session = Depends(get_session)
+) -> dict:
+    reward = session.get(Reward, reward_id)
+    if reward is None:
+        raise DomainError("reward not found", 404)
+    credit_reward(session, reward, payload)
+    session.commit()
+    return {
+        "id": reward.id,
+        "event_id": reward.event_id,
+        "status": reward.status,
+        "value_myr": micros_to_myr(reward.value_myr or 0),
+    }
+
+
+@router.post("/rewards/{reward_id}/reverse")
+def reverse_card_reward(reward_id: str, payload: ReverseCreate, session: Session = Depends(get_session)) -> dict:
+    reward = session.get(Reward, reward_id)
+    if reward is None:
+        raise DomainError("reward not found", 404)
+    reverse_reward(session, reward, payload.reason)
+    session.commit()
+    return {"id": reward.id, "status": reward.status}
+
+
 def report_window(start: datetime | None, end: datetime | None) -> tuple[str | None, str | None]:
     return (utc_text(start) if start else None, utc_text(end) if end else None)
 
@@ -371,6 +518,11 @@ def fees_report(session: Session = Depends(get_session)) -> dict:
         {"component_type": component_type, "value_myr": micros_to_myr(value)} for component_type, value in rows
     ]
     return {"total_myr": micros_to_myr(sum(value for _, value in rows)), "components": components}
+
+
+@router.get("/reports/card-costs")
+def card_costs(session: Session = Depends(get_session)) -> list[dict]:
+    return card_cost_report(session)
 
 
 @router.get("/reports/summary", response_model=SummaryRead)

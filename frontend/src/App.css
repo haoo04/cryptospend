@@ -657,6 +657,11 @@ select:focus {
   font-variant-numeric: tabular-nums;
 }
 
+.account-balances .available-row {
+  color: var(--green);
+  border-top: 1px dashed var(--line);
+}
+
 .asset-strip div {
   margin-top: 12px;
   display: flex;
@@ -684,6 +689,120 @@ select:focus {
   gap: 7px;
 }
 
+.card-center {
+  max-width: 1080px;
+}
+
+.card-tabs {
+  overflow-x: auto;
+}
+
+.card-cost-grid {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.card-cost {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfcfa;
+}
+
+.card-cost-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.card-cost-head > div > span {
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.card-cost-head h3 {
+  margin: 4px 0 0;
+  font: 500 19px/1.2 Georgia, serif;
+}
+
+.waterfall {
+  margin: 17px 0 12px;
+  display: grid;
+  gap: 5px;
+}
+
+.waterfall > div {
+  padding: 7px 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #edf0ec;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.waterfall > div strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.waterfall .offset strong {
+  color: var(--green);
+}
+
+.waterfall .total {
+  margin-top: 5px;
+  padding-top: 12px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.waterfall .total strong {
+  font: 500 18px/1 Georgia, serif;
+}
+
+.funding-tags {
+  margin-bottom: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.funding-tags span {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.card-cost > small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.card-history-title {
+  margin-top: 30px;
+}
+
+.card-history {
+  margin-bottom: -24px;
+}
+
+.reward-forms > form {
+  align-content: start;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+
 .empty {
   padding: 28px;
   color: var(--muted);
@@ -698,7 +817,8 @@ select:focus {
   }
 
   .dashboard-grid,
-  .transactions-layout {
+  .transactions-layout,
+  .card-cost-grid {
     grid-template-columns: 1fr;
   }
 

@@ -22,6 +22,7 @@ export type Account = {
   provider: string | null
   closed: boolean
   balances: Balance[]
+  available_balances: Balance[]
 }
 
 export type LedgerEntry = {
@@ -91,6 +92,59 @@ export type FeeReport = {
   components: { component_type: string; value_myr: string }[]
 }
 
+export type Reward = {
+  id: string
+  asset_id: string
+  amount: string
+  status: string
+  value_myr: string | null
+}
+
+export type CardRecord = {
+  id: string
+  event_id: string | null
+  parent_card_transaction_id: string | null
+  original_transaction_id: string | null
+  provider: string
+  external_id: string | null
+  transaction_type: 'AUTHORIZATION' | 'PURCHASE' | 'REFUND'
+  merchant_name: string
+  merchant_amount: string
+  merchant_asset_id: string
+  billing_amount: string
+  billing_asset_id: string
+  merchant_value_myr: string
+  status: string
+  authorized_at: string | null
+  settled_at: string | null
+  hold: { account_id: string; asset_id: string; amount: string; value_myr: string; status: string } | null
+  rewards: Reward[]
+}
+
+export type CardCost = {
+  id: string
+  provider: string
+  merchant_name: string
+  merchant_amount: string
+  merchant_value_myr: string
+  billing_amount: string
+  funding_value_myr: string
+  separate_fee_value_myr: string
+  gross_economic_cost_myr: string
+  refunded_value_myr: string
+  credited_cashback_value_myr: string
+  net_economic_cost_myr: string
+  total_leakage_myr: string
+  fx_deviation_myr: string | null
+  conversion_deviation_myr: string | null
+  residual_myr: string | null
+  breakdown_confidence: string
+  status: string
+  settled_at: string
+  funding_legs: { asset_id: string; asset_symbol: string; quantity: string; reference_value_myr: string }[]
+  fees: { component_type: string; value_myr: string; included_in_funding_amount: boolean }[]
+}
+
 const apiRoot = import.meta.env.VITE_API_URL ?? '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -112,6 +166,8 @@ export const api = {
   summary: () => request<Summary>('/reports/summary'),
   portfolio: () => request<PortfolioPosition[]>('/reports/portfolio'),
   fees: () => request<FeeReport>('/reports/fees'),
+  cards: () => request<CardRecord[]>('/cards'),
+  cardCosts: () => request<CardCost[]>('/reports/card-costs'),
   onboard: () => request('/onboarding', { method: 'POST', body: '{}' }),
   createAccount: (payload: { name: string; account_type: string; provider: string | null }) =>
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
@@ -125,6 +181,18 @@ export const api = {
     request<TransactionEvent>('/transfers', { method: 'POST', body: JSON.stringify(payload) }),
   createRate: (payload: Record<string, unknown>) =>
     request<{ id: string; rate: string }>('/rates', { method: 'POST', body: JSON.stringify(payload) }),
+  authorizeCard: (payload: Record<string, unknown>) =>
+    request<CardRecord>('/cards/authorizations', { method: 'POST', body: JSON.stringify(payload) }),
+  reverseAuthorization: (id: string) =>
+    request<CardRecord>(`/cards/${id}/reverse-authorization`, { method: 'POST' }),
+  settleCard: (payload: Record<string, unknown>) =>
+    request<CardRecord>('/cards/settlements', { method: 'POST', body: JSON.stringify(payload) }),
+  refundCard: (id: string, payload: Record<string, unknown>) =>
+    request<CardRecord>(`/cards/${id}/refunds`, { method: 'POST', body: JSON.stringify(payload) }),
+  createReward: (id: string, payload: Record<string, unknown>) =>
+    request<Reward>(`/cards/${id}/rewards`, { method: 'POST', body: JSON.stringify(payload) }),
+  creditReward: (id: string, payload: Record<string, unknown>) =>
+    request<Reward>(`/rewards/${id}/credit`, { method: 'POST', body: JSON.stringify(payload) }),
   reverseEvent: (id: string, reason: string) =>
     request<TransactionEvent>(`/events/${id}/reverse`, {
       method: 'POST',

@@ -123,6 +123,7 @@ class AccountRead(BaseModel):
     provider: str | None
     closed: bool
     balances: list[BalanceRead] = Field(default_factory=list)
+    available_balances: list[BalanceRead] = Field(default_factory=list)
 
 
 class EntryRead(BaseModel):
@@ -181,6 +182,7 @@ class FeeCreate(BaseModel):
     accounting_treatment: FeeTreatment = FeeTreatment.EXPENSED
     included_in_funding_amount: bool = False
     expense_account_id: str | None = None
+    funding_account_id: str | None = None
     calculation_method: str | None = Field(default=None, max_length=160)
 
     @field_validator("amount", "value_myr")
@@ -296,6 +298,152 @@ class PortfolioPositionRead(BaseModel):
     unrealized_gain_loss_myr: str | None
     realized_gain_loss_myr: str
     basis_complete: bool
+
+
+class CardAuthorizationCreate(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    provider_account_id: str = Field(min_length=1, max_length=160)
+    external_id: str | None = Field(default=None, max_length=200)
+    card_account_id: str
+    merchant_name: str = Field(min_length=1, max_length=200)
+    merchant_country: str | None = Field(default=None, min_length=2, max_length=2)
+    merchant_asset_id: str
+    merchant_amount: str
+    billing_asset_id: str
+    billing_amount: str
+    merchant_value_myr: str
+    hold_account_id: str
+    hold_asset_id: str
+    hold_amount: str
+    hold_value_myr: str
+    authorized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("merchant_amount", "billing_amount", "merchant_value_myr", "hold_amount", "hold_value_myr")
+    @classmethod
+    def validate_authorization_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("authorization amounts must be positive")
+        return normalized
+
+
+class CardFundingLegCreate(BaseModel):
+    account_id: str
+    asset_id: str
+    quantity: str
+    transaction_value_myr: str
+    reference_value_myr: str
+    actual_conversion_rate: str | None = None
+
+    @field_validator("quantity", "transaction_value_myr", "reference_value_myr", "actual_conversion_rate")
+    @classmethod
+    def validate_funding_decimal(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("funding values must be positive")
+        return normalized
+
+
+class CardSettlementCreate(BaseModel):
+    authorization_id: str | None = None
+    provider: str = Field(min_length=1, max_length=80)
+    provider_account_id: str = Field(min_length=1, max_length=160)
+    external_id: str | None = Field(default=None, max_length=200)
+    card_account_id: str
+    merchant_name: str = Field(min_length=1, max_length=200)
+    merchant_country: str | None = Field(default=None, min_length=2, max_length=2)
+    merchant_asset_id: str
+    merchant_amount: str
+    billing_asset_id: str
+    billing_amount: str
+    merchant_value_myr: str
+    reference_fx_rate: str | None = None
+    expense_account_id: str
+    gain_loss_account_id: str
+    funding_legs: list[CardFundingLegCreate] = Field(min_length=1)
+    fees: list[FeeCreate] = Field(default_factory=list)
+    settled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    final_capture: bool = True
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("merchant_amount", "billing_amount", "merchant_value_myr", "reference_fx_rate")
+    @classmethod
+    def validate_settlement_decimal(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("settlement values must be positive")
+        return normalized
+
+
+class CardRefundLegCreate(BaseModel):
+    account_id: str
+    asset_id: str
+    quantity: str
+    transaction_value_myr: str
+    reference_value_myr: str
+
+    @field_validator("quantity", "transaction_value_myr", "reference_value_myr")
+    @classmethod
+    def validate_refund_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("refund values must be positive")
+        return normalized
+
+
+class CardRefundCreate(BaseModel):
+    external_id: str | None = Field(default=None, max_length=200)
+    refund_value_myr: str
+    expense_account_id: str
+    refund_legs: list[CardRefundLegCreate] = Field(min_length=1)
+    refunded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    full_refund: bool = False
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("refund_value_myr")
+    @classmethod
+    def validate_refund_value(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("refund value must be positive")
+        return normalized
+
+
+class RewardCreate(BaseModel):
+    reward_type: str = Field(default="CASHBACK", max_length=48)
+    account_id: str
+    asset_id: str
+    amount: str
+    earned_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    external_id: str | None = Field(default=None, max_length=200)
+
+    @field_validator("amount")
+    @classmethod
+    def validate_reward_amount(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("reward amount must be positive")
+        return normalized
+
+
+class RewardCreditCreate(BaseModel):
+    income_account_id: str
+    value_myr: str
+    valuation_rate: str
+    valuation_source: str = Field(min_length=1, max_length=120)
+    credited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("value_myr", "valuation_rate")
+    @classmethod
+    def validate_credit_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("credited values must be positive")
+        return normalized
 
 
 EventRead.model_rebuild()

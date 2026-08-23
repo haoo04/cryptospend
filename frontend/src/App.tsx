@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './api'
-import type { Account, Asset, FeeReport, PortfolioPosition, Summary, TransactionEvent } from './api'
+import type { Account, Asset, CardCost, CardRecord, FeeReport, PortfolioPosition, Summary, TransactionEvent } from './api'
+import CardCenter from './CardCenter'
+import { formatMyr, localDateTimeValue } from './format'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio'
+type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -12,21 +14,6 @@ const emptySummary: Summary = {
   expense_myr: '0',
   gross_spending_myr: '0',
   net_spending_myr: '0',
-}
-
-function localDateTimeValue() {
-  const date = new Date()
-  const offset = date.getTimezoneOffset() * 60_000
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
-}
-
-function formatMyr(value: string) {
-  const negative = value.startsWith('-')
-  const unsigned = negative ? value.slice(1) : value
-  const [whole, fraction = ''] = unsigned.split('.')
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-  const decimals = fraction ? `.${fraction}` : '.00'
-  return `RM ${negative ? '-' : ''}${grouped}${decimals}`
 }
 
 function App() {
@@ -37,6 +24,8 @@ function App() {
   const [summary, setSummary] = useState<Summary>(emptySummary)
   const [portfolio, setPortfolio] = useState<PortfolioPosition[]>([])
   const [feeReport, setFeeReport] = useState<FeeReport>({ total_myr: '0', components: [] })
+  const [cards, setCards] = useState<CardRecord[]>([])
+  const [cardCosts, setCardCosts] = useState<CardCost[]>([])
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -44,13 +33,15 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextAssets, nextAccounts, nextEvents, nextSummary, nextPortfolio, nextFees] = await Promise.all([
+      const [nextAssets, nextAccounts, nextEvents, nextSummary, nextPortfolio, nextFees, nextCards, nextCardCosts] = await Promise.all([
         api.assets(),
         api.accounts(),
         api.events(),
         api.summary(),
         api.portfolio(),
         api.fees(),
+        api.cards(),
+        api.cardCosts(),
       ])
       setAssets(nextAssets)
       setAccounts(nextAccounts)
@@ -58,6 +49,8 @@ function App() {
       setSummary(nextSummary)
       setPortfolio(nextPortfolio)
       setFeeReport(nextFees)
+      setCards(nextCards)
+      setCardCosts(nextCardCosts)
       setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? null : null))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load CryptoSpend')
@@ -116,6 +109,7 @@ function App() {
               ['transactions', 'Transactions'],
               ['add', 'Add transaction'],
               ['portfolio', 'Portfolio'],
+              ['cards', 'Card costs'],
               ['accounts', 'Accounts'],
             ] as [View, string][]
           ).map(([key, label]) => (
@@ -185,6 +179,21 @@ function App() {
             assets={assets}
             busy={busy}
             onRate={(payload) => runAction(() => api.createRate(payload))}
+          />
+        )}
+        {ready && view === 'cards' && (
+          <CardCenter
+            assets={assets}
+            accounts={accounts}
+            cards={cards}
+            costs={cardCosts}
+            busy={busy}
+            onAuthorize={(payload) => runAction(() => api.authorizeCard(payload))}
+            onReverseAuthorization={(id) => runAction(() => api.reverseAuthorization(id))}
+            onSettle={(payload) => runAction(() => api.settleCard(payload))}
+            onRefund={(id, payload) => runAction(() => api.refundCard(id, payload))}
+            onReward={(id, payload) => runAction(() => api.createReward(id, payload))}
+            onCreditReward={(id, payload) => runAction(() => api.creditReward(id, payload))}
           />
         )}
         {ready && view === 'accounts' && (
@@ -788,7 +797,13 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
               <div className="account-balances">
                 {account.balances.map((balance) => (
                   <div key={balance.asset_id}>
-                    <span>{balance.quantity} {balance.asset_symbol}</span>
+                    <span>Book · {balance.quantity} {balance.asset_symbol}</span>
+                    <strong>{formatMyr(balance.book_amount_myr)}</strong>
+                  </div>
+                ))}
+                {account.available_balances.map((balance) => (
+                  <div className="available-row" key={`available-${balance.asset_id}`}>
+                    <span>Available · {balance.quantity} {balance.asset_symbol}</span>
                     <strong>{formatMyr(balance.book_amount_myr)}</strong>
                   </div>
                 ))}

@@ -8,12 +8,15 @@ from app.enums import AccountType, EntryDirection, EventType, RateType
 from app.models import (
     Account,
     Asset,
+    CardFundingLeg,
+    CardTransaction,
     CostLot,
     FeeComponent,
     LedgerEntry,
     LotDisposal,
     LotTransfer,
     RateSnapshot,
+    Reward,
     Trade,
     TransactionEvent,
     Transfer,
@@ -288,6 +291,51 @@ def reverse_cost_projection(session: Session, event: TransactionEvent) -> None:
         records = session.scalars(select(model).where(model.event_id == event.id, model.reversed.is_(False))).all()
         for record in records:
             record.reversed = True
+
+    for leg in session.scalars(
+        select(CardFundingLeg).where(CardFundingLeg.event_id == event.id, CardFundingLeg.reversed.is_(False))
+    ):
+        leg.reversed = True
+    card = session.scalar(select(CardTransaction).where(CardTransaction.event_id == event.id))
+    if card:
+        if card.transaction_type == "PURCHASE":
+            has_refunds = session.scalar(
+                select(CardTransaction.id).where(
+                    CardTransaction.original_transaction_id == card.id,
+                    CardTransaction.reversed.is_(False),
+                )
+            )
+            has_rewards = session.scalar(
+                select(Reward.id).where(Reward.card_transaction_id == card.id, Reward.status == "CREDITED")
+            )
+            if has_refunds or has_rewards:
+                raise DomainError("reverse card refunds and credited rewards before reversing the settlement", 409)
+            if card.parent_card_transaction_id:
+                parent = session.get(CardTransaction, card.parent_card_transaction_id)
+                if parent:
+                    parent.status = "REVERSED"
+                    parent.reversed = True
+        elif card.transaction_type == "REFUND" and card.original_transaction_id:
+            card.status = "REVERSED"
+            card.reversed = True
+            original = session.get(CardTransaction, card.original_transaction_id)
+            if original:
+                other_refund = session.scalar(
+                    select(CardTransaction.id).where(
+                        CardTransaction.original_transaction_id == original.id,
+                        CardTransaction.id != card.id,
+                        CardTransaction.reversed.is_(False),
+                    )
+                )
+                original.status = "PARTIALLY_REFUNDED" if other_refund else "SETTLED"
+                from app.cards import recalculate_card_net
+
+                recalculate_card_net(session, original)
+        card.status = "REVERSED"
+        card.reversed = True
+    reward = session.scalar(select(Reward).where(Reward.event_id == event.id))
+    if reward:
+        reward.status = "REVERSED"
 
 
 def portfolio_positions(session: Session) -> list[dict[str, str | bool | None]]:

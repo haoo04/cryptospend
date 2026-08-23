@@ -282,3 +282,150 @@ class LotTransfer(Base):
 
     source_lot: Mapped[CostLot] = relationship(foreign_keys=[source_lot_id])
     destination_lot: Mapped[CostLot] = relationship(foreign_keys=[destination_lot_id])
+
+
+class EventLink(Base):
+    __tablename__ = "event_links"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    source_event_id: Mapped[str] = mapped_column(ForeignKey("transaction_events.id"), index=True)
+    target_event_id: Mapped[str] = mapped_column(ForeignKey("transaction_events.id"), index=True)
+    relation_type: Mapped[str] = mapped_column(String(40))
+
+    __table_args__ = (
+        UniqueConstraint("source_event_id", "target_event_id", "relation_type", name="uq_event_link"),
+        CheckConstraint("source_event_id <> target_event_id", name="event_link_events_differ"),
+    )
+
+
+class CardTransaction(Base):
+    __tablename__ = "card_transactions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    event_id: Mapped[str | None] = mapped_column(ForeignKey("transaction_events.id"), unique=True, index=True)
+    parent_card_transaction_id: Mapped[str | None] = mapped_column(ForeignKey("card_transactions.id"), index=True)
+    original_transaction_id: Mapped[str | None] = mapped_column(ForeignKey("card_transactions.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    provider_account_id: Mapped[str] = mapped_column(String(160))
+    external_id: Mapped[str | None] = mapped_column(String(200))
+    transaction_type: Mapped[str] = mapped_column(String(24))
+    card_account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    merchant_name: Mapped[str] = mapped_column(String(200))
+    merchant_country: Mapped[str | None] = mapped_column(String(2))
+    merchant_asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    merchant_amount: Mapped[str] = mapped_column(Text)
+    billing_asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    billing_amount: Mapped[str] = mapped_column(Text)
+    merchant_value_myr: Mapped[int] = mapped_column(Integer)
+    funding_value_myr: Mapped[int] = mapped_column(Integer, default=0)
+    separate_fee_value_myr: Mapped[int] = mapped_column(Integer, default=0)
+    gross_economic_cost_myr: Mapped[int] = mapped_column(Integer, default=0)
+    net_economic_cost_myr: Mapped[int] = mapped_column(Integer, default=0)
+    total_leakage_myr: Mapped[int] = mapped_column(Integer, default=0)
+    actual_fx_rate: Mapped[str | None] = mapped_column(Text)
+    reference_fx_rate: Mapped[str | None] = mapped_column(Text)
+    fx_deviation_myr: Mapped[int | None] = mapped_column(Integer)
+    conversion_deviation_myr: Mapped[int | None] = mapped_column(Integer)
+    residual_myr: Mapped[int | None] = mapped_column(Integer)
+    breakdown_confidence: Mapped[str] = mapped_column(String(32), default="MISSING_INPUT")
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    authorized_at: Mapped[str | None] = mapped_column(String(40))
+    settled_at: Mapped[str | None] = mapped_column(String(40), index=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+    reversed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    event: Mapped[TransactionEvent | None] = relationship()
+    funding_legs: Mapped[list[CardFundingLeg]] = relationship(back_populates="card_transaction", lazy="selectin")
+    cost_components: Mapped[list[CardCostComponent]] = relationship(
+        back_populates="card_transaction", lazy="selectin"
+    )
+    rewards: Mapped[list[Reward]] = relationship(back_populates="card_transaction", lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_account_id", "external_id", name="uq_card_external_record"),
+        CheckConstraint(
+            "status IN ('AUTHORIZED','SETTLED','PARTIALLY_SETTLED','REVERSED','PARTIALLY_REFUNDED','REFUNDED')",
+            name="card_status_valid",
+        ),
+        CheckConstraint("transaction_type IN ('AUTHORIZATION','PURCHASE','REFUND')", name="card_type_valid"),
+    )
+
+
+class CardHold(Base):
+    __tablename__ = "card_holds"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    card_transaction_id: Mapped[str] = mapped_column(ForeignKey("card_transactions.id"), unique=True, index=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    amount: Mapped[str] = mapped_column(Text)
+    value_myr: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+    released_at: Mapped[str | None] = mapped_column(String(40))
+
+    __table_args__ = (CheckConstraint("status IN ('ACTIVE','RELEASED')", name="card_hold_status_valid"),)
+
+
+class CardFundingLeg(Base):
+    __tablename__ = "card_funding_legs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    card_transaction_id: Mapped[str] = mapped_column(ForeignKey("card_transactions.id"), index=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("transaction_events.id"), index=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    quantity: Mapped[str] = mapped_column(Text)
+    transaction_value_myr: Mapped[int] = mapped_column(Integer)
+    reference_value_myr: Mapped[int] = mapped_column(Integer)
+    book_basis_myr: Mapped[int] = mapped_column(Integer)
+    actual_conversion_rate: Mapped[str | None] = mapped_column(Text)
+    leg_type: Mapped[str] = mapped_column(String(16), default="FUNDING")
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    reversed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    card_transaction: Mapped[CardTransaction] = relationship(back_populates="funding_legs")
+    asset: Mapped[Asset] = relationship()
+    account: Mapped[Account] = relationship()
+
+    __table_args__ = (CheckConstraint("leg_type IN ('FUNDING','REFUND')", name="card_leg_type_valid"),)
+
+
+class CardCostComponent(Base):
+    __tablename__ = "card_cost_components"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    card_transaction_id: Mapped[str] = mapped_column(ForeignKey("card_transactions.id"), index=True)
+    component_type: Mapped[str] = mapped_column(String(48))
+    value_myr: Mapped[int] = mapped_column(Integer)
+    source_kind: Mapped[str] = mapped_column(String(16), default="DERIVED")
+    calculation_method: Mapped[str] = mapped_column(String(240))
+    confidence: Mapped[str] = mapped_column(String(32))
+
+    card_transaction: Mapped[CardTransaction] = relationship(back_populates="cost_components")
+
+
+class Reward(Base):
+    __tablename__ = "rewards"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    card_transaction_id: Mapped[str] = mapped_column(ForeignKey("card_transactions.id"), index=True)
+    event_id: Mapped[str | None] = mapped_column(ForeignKey("transaction_events.id"), unique=True, index=True)
+    reward_type: Mapped[str] = mapped_column(String(48))
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    amount: Mapped[str] = mapped_column(Text)
+    value_myr: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    earned_at: Mapped[str] = mapped_column(String(40))
+    credited_at: Mapped[str | None] = mapped_column(String(40))
+    reversed_at: Mapped[str | None] = mapped_column(String(40))
+    external_id: Mapped[str | None] = mapped_column(String(200))
+
+    card_transaction: Mapped[CardTransaction] = relationship(back_populates="rewards")
+    asset: Mapped[Asset] = relationship()
+    account: Mapped[Account] = relationship()
+
+    __table_args__ = (
+        CheckConstraint("status IN ('PENDING','CREDITED','REVERSED','EXPIRED')", name="reward_status_valid"),
+    )
