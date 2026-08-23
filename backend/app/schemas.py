@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.enums import AccountType, EntryDirection, EventType
+from app.enums import AccountType, EntryDirection, EventType, FeeTreatment
 from app.money import canonical_decimal, parse_decimal
 
 
@@ -156,6 +156,7 @@ class EventRead(BaseModel):
     reversed_by_event_id: str | None
     posted_at: str | None
     entries: list[EntryRead]
+    fees: list["FeeRead"] = Field(default_factory=list)
 
 
 class SettingsRead(BaseModel):
@@ -170,3 +171,131 @@ class SummaryRead(BaseModel):
     expense_myr: str
     gross_spending_myr: str
     net_spending_myr: str
+
+
+class FeeCreate(BaseModel):
+    component_type: str = Field(min_length=1, max_length=64)
+    asset_id: str
+    amount: str
+    value_myr: str
+    accounting_treatment: FeeTreatment = FeeTreatment.EXPENSED
+    included_in_funding_amount: bool = False
+    expense_account_id: str | None = None
+    calculation_method: str | None = Field(default=None, max_length=160)
+
+    @field_validator("amount", "value_myr")
+    @classmethod
+    def validate_amount(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) < 0:
+            raise ValueError("amounts must be non-negative")
+        return normalized
+
+
+class FeeRead(BaseModel):
+    id: str
+    component_type: str
+    asset_id: str
+    asset_symbol: str
+    amount: str
+    value_myr: str
+    source_kind: str
+    included_in_funding_amount: bool
+    accounting_treatment: str
+    calculation_method: str | None
+    confidence: str
+
+
+class TradeCreate(BaseModel):
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    account_id: str
+    sell_asset_id: str
+    sell_quantity: str
+    buy_asset_id: str
+    buy_quantity: str
+    execution_rate: str
+    gross_value_myr: str
+    order_id: str | None = Field(default=None, max_length=200)
+    description: str = Field(default="", max_length=500)
+    gain_loss_account_id: str
+    fee: FeeCreate | None = None
+
+    @field_validator("sell_quantity", "buy_quantity", "execution_rate", "gross_value_myr")
+    @classmethod
+    def validate_trade_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("trade values must be positive")
+        return normalized
+
+
+class TransferCreate(BaseModel):
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source_account_id: str
+    destination_account_id: str
+    asset_id: str
+    sent_quantity: str
+    received_quantity: str
+    network: str | None = Field(default=None, max_length=80)
+    tx_hash: str | None = Field(default=None, max_length=200)
+    description: str = Field(default="", max_length=500)
+    gain_loss_account_id: str
+    fee: FeeCreate | None = None
+
+    @field_validator("sent_quantity", "received_quantity")
+    @classmethod
+    def validate_transfer_decimal(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("transfer quantities must be positive")
+        return normalized
+
+
+class RateCreate(BaseModel):
+    base_asset_id: str
+    quote_asset_id: str
+    rate: str
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source: str = Field(min_length=1, max_length=120)
+    rate_type: str = Field(default="MARKET", max_length=32)
+    path: str | None = None
+
+    @field_validator("rate")
+    @classmethod
+    def validate_rate(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("rate must be positive")
+        return normalized
+
+
+class CostLotRead(BaseModel):
+    id: str
+    asset_id: str
+    asset_symbol: str
+    account_id: str
+    account_name: str
+    source_event_id: str
+    acquired_at: str
+    original_quantity: str
+    remaining_quantity: str
+    basis_myr: str
+    remaining_basis_myr: str
+    basis_status: str
+    voided: bool
+
+
+class PortfolioPositionRead(BaseModel):
+    asset_id: str
+    symbol: str
+    quantity: str
+    cost_basis_myr: str
+    average_cost_myr: str | None
+    market_rate_myr: str | None
+    market_value_myr: str | None
+    unrealized_gain_loss_myr: str | None
+    realized_gain_loss_myr: str
+    basis_complete: bool
+
+
+EventRead.model_rebuild()

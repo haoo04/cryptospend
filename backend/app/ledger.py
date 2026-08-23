@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.enums import AccountType, EntryDirection, EventStatus, EventType
-from app.models import Account, Asset, AuditLog, LedgerEntry, TransactionEvent, utc_now_text
+from app.models import Account, Asset, AuditLog, FeeComponent, LedgerEntry, TransactionEvent, utc_now_text
 from app.money import canonical_decimal, micros_to_myr, myr_to_micros, parse_decimal
 from app.schemas import EventDraftCreate, ManualEventCreate
 
@@ -91,6 +91,9 @@ def post_event(session: Session, event: TransactionEvent) -> TransactionEvent:
             raise DomainError("entry quantity cannot be negative")
     event.status = EventStatus.POSTED.value
     event.posted_at = utc_now_text()
+    from app.cost_basis import create_event_acquisition_lots
+
+    create_event_acquisition_lots(session, event)
     add_audit(session, "EVENT_POSTED", event.id, {"debit_micros": debit, "credit_micros": credit})
     session.flush()
     return event
@@ -133,6 +136,7 @@ def get_event(session: Session, event_id: str) -> TransactionEvent:
         .where(TransactionEvent.id == event_id)
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
+        .options(selectinload(TransactionEvent.fees).selectinload(FeeComponent.asset))
     )
     if event is None:
         raise DomainError("event not found", 404)
@@ -142,6 +146,9 @@ def get_event(session: Session, event_id: str) -> TransactionEvent:
 def reverse_event(session: Session, original: TransactionEvent, reason: str) -> TransactionEvent:
     if original.status != EventStatus.POSTED.value:
         raise DomainError("only posted events can be reversed", 409)
+    from app.cost_basis import reverse_cost_projection
+
+    reverse_cost_projection(session, original)
     command = EventDraftCreate(
         event_type=EventType.REVERSAL,
         occurred_at=datetime.now(UTC),

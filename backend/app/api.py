@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.cost_basis import portfolio_positions
 from app.database import get_session
 from app.enums import AccountType
 from app.ledger import (
@@ -19,21 +20,27 @@ from app.ledger import (
     reverse_event,
     utc_text,
 )
-from app.models import Account, Asset, LedgerEntry, Setting, TransactionEvent
+from app.models import Account, Asset, CostLot, FeeComponent, LedgerEntry, RateSnapshot, Setting, TransactionEvent
 from app.money import micros_to_myr
 from app.schemas import (
     AccountCreate,
     AccountRead,
     AssetCreate,
     AssetRead,
+    CostLotRead,
     EventDraftCreate,
     EventRead,
     ManualEventCreate,
     OnboardingCreate,
+    PortfolioPositionRead,
+    RateCreate,
     ReverseCreate,
     SettingsRead,
     SummaryRead,
+    TradeCreate,
+    TransferCreate,
 )
+from app.trading import create_trade, create_transfer
 
 router = APIRouter(prefix="/api")
 
@@ -78,6 +85,22 @@ def event_read(event: TransactionEvent) -> EventRead:
                 "valuation_source": entry.valuation_source,
             }
             for entry in event.entries
+        ],
+        fees=[
+            {
+                "id": fee.id,
+                "component_type": fee.component_type,
+                "asset_id": fee.asset_id,
+                "asset_symbol": fee.asset.symbol,
+                "amount": fee.amount,
+                "value_myr": micros_to_myr(fee.value_myr),
+                "source_kind": fee.source_kind,
+                "included_in_funding_amount": fee.included_in_funding_amount,
+                "accounting_treatment": fee.accounting_treatment,
+                "calculation_method": fee.calculation_method,
+                "confidence": fee.confidence,
+            }
+            for fee in event.fees
         ],
     )
 
@@ -159,6 +182,9 @@ def onboarding(payload: OnboardingCreate, session: Session = Depends(get_session
         AccountCreate(name="Salary", account_type=AccountType.INCOME),
         AccountCreate(name="Other Income", account_type=AccountType.INCOME),
         AccountCreate(name="General Expense", account_type=AccountType.EXPENSE),
+        AccountCreate(name="Trading Fees", account_type=AccountType.EXPENSE),
+        AccountCreate(name="Network Fees", account_type=AccountType.EXPENSE),
+        AccountCreate(name="Withdrawal Fees", account_type=AccountType.EXPENSE),
         AccountCreate(name="Opening Balances", account_type=AccountType.EQUITY),
         AccountCreate(name="Realized Gain/Loss", account_type=AccountType.GAIN_LOSS),
         AccountCreate(name="Clearing", account_type=AccountType.CLEARING),
@@ -233,6 +259,72 @@ def reverse_posted(event_id: str, payload: ReverseCreate, session: Session = Dep
     return event_read(get_event(session, event.id))
 
 
+@router.post("/trades", response_model=EventRead, status_code=201)
+def post_trade(payload: TradeCreate, session: Session = Depends(get_session)) -> EventRead:
+    event = create_trade(session, payload)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.post("/transfers", response_model=EventRead, status_code=201)
+def post_transfer(payload: TransferCreate, session: Session = Depends(get_session)) -> EventRead:
+    event = create_transfer(session, payload)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.post("/rates", status_code=201)
+def create_rate(payload: RateCreate, session: Session = Depends(get_session)) -> dict[str, str]:
+    if payload.base_asset_id == payload.quote_asset_id:
+        raise DomainError("rate base and quote assets must differ")
+    if session.get(Asset, payload.base_asset_id) is None or session.get(Asset, payload.quote_asset_id) is None:
+        raise DomainError("rate assets do not exist")
+    rate = RateSnapshot(
+        base_asset_id=payload.base_asset_id,
+        quote_asset_id=payload.quote_asset_id,
+        rate=payload.rate,
+        observed_at=utc_text(payload.observed_at),
+        source=payload.source,
+        rate_type=payload.rate_type.upper(),
+        path=payload.path,
+        confidence="EXACT",
+    )
+    session.add(rate)
+    session.commit()
+    return {"id": rate.id, "rate": rate.rate}
+
+
+@router.get("/cost-lots", response_model=list[CostLotRead])
+def list_cost_lots(
+    asset_id: str | None = None,
+    include_voided: bool = False,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    statement = select(CostLot).order_by(CostLot.acquired_at, CostLot.id)
+    if asset_id:
+        statement = statement.where(CostLot.asset_id == asset_id)
+    if not include_voided:
+        statement = statement.where(CostLot.voided.is_(False))
+    return [
+        {
+            "id": lot.id,
+            "asset_id": lot.asset_id,
+            "asset_symbol": lot.asset.symbol,
+            "account_id": lot.account_id,
+            "account_name": lot.account.name,
+            "source_event_id": lot.source_event_id,
+            "acquired_at": lot.acquired_at,
+            "original_quantity": lot.original_quantity,
+            "remaining_quantity": lot.remaining_quantity,
+            "basis_myr": micros_to_myr(lot.basis_myr),
+            "remaining_basis_myr": micros_to_myr(lot.remaining_basis_myr),
+            "basis_status": lot.basis_status,
+            "voided": lot.voided,
+        }
+        for lot in session.scalars(statement)
+    ]
+
+
 def report_window(start: datetime | None, end: datetime | None) -> tuple[str | None, str | None]:
     return (utc_text(start) if start else None, utc_text(end) if end else None)
 
@@ -260,6 +352,25 @@ def income_expense(
         "expense_myr": micros_to_myr(totals["expense"]),
         "net_income_myr": micros_to_myr(totals["income"] - totals["expense"]),
     }
+
+
+@router.get("/reports/portfolio", response_model=list[PortfolioPositionRead])
+def portfolio(session: Session = Depends(get_session)) -> list[dict[str, str | bool | None]]:
+    return portfolio_positions(session)
+
+
+@router.get("/reports/fees")
+def fees_report(session: Session = Depends(get_session)) -> dict:
+    rows = session.execute(
+        select(FeeComponent.component_type, func.sum(FeeComponent.value_myr))
+        .where(FeeComponent.reversed.is_(False))
+        .group_by(FeeComponent.component_type)
+        .order_by(FeeComponent.component_type)
+    ).all()
+    components = [
+        {"component_type": component_type, "value_myr": micros_to_myr(value)} for component_type, value in rows
+    ]
+    return {"total_myr": micros_to_myr(sum(value for _, value in rows)), "components": components}
 
 
 @router.get("/reports/summary", response_model=SummaryRead)

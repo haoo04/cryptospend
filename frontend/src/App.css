@@ -184,7 +184,7 @@ h3 {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 14px;
 }
 
@@ -435,6 +435,26 @@ dd {
   overflow: hidden;
 }
 
+.detail-subtitle {
+  margin-top: 20px;
+}
+
+.fee-list {
+  display: grid;
+  gap: 7px;
+}
+
+.fee-list > div,
+.fee-breakdown > div {
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+}
+
 .entry-list > div {
   padding: 11px;
   display: grid;
@@ -468,6 +488,31 @@ dd {
 
 .form-panel {
   max-width: 880px;
+}
+
+.mode-tabs {
+  margin: -8px 0 24px;
+  padding-bottom: 14px;
+  display: flex;
+  gap: 7px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mode-tabs button {
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.mode-tabs button.active {
+  border-color: var(--green);
+  color: #fff;
+  background: var(--green);
 }
 
 form {
@@ -521,6 +566,34 @@ select:focus {
   margin-top: 4px;
   display: flex;
   justify-content: flex-end;
+}
+
+.fee-fields {
+  margin: 4px 0 0;
+  padding: 16px;
+  border: 1px dashed #cbd5ce;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.fee-fields legend {
+  padding: 0 7px;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.checkbox {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+}
+
+.checkbox input {
+  min-height: 0;
 }
 
 .split-forms {
@@ -600,6 +673,17 @@ select:focus {
   font-weight: 800;
 }
 
+.large-value {
+  margin: 22px 0;
+  display: block;
+  font: 500 31px/1 Georgia, serif;
+}
+
+.fee-breakdown {
+  display: grid;
+  gap: 7px;
+}
+
 .empty {
   padding: 28px;
   color: var(--muted);
@@ -659,7 +743,8 @@ select:focus {
   .metric-grid,
   .account-cards,
   .split-forms,
-  form {
+  form,
+  .fee-fields {
     grid-template-columns: 1fr;
   }
 

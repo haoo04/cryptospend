@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './api'
-import type { Account, Asset, Summary, TransactionEvent } from './api'
+import type { Account, Asset, FeeReport, PortfolioPosition, Summary, TransactionEvent } from './api'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts'
+type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -35,6 +35,8 @@ function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [events, setEvents] = useState<TransactionEvent[]>([])
   const [summary, setSummary] = useState<Summary>(emptySummary)
+  const [portfolio, setPortfolio] = useState<PortfolioPosition[]>([])
+  const [feeReport, setFeeReport] = useState<FeeReport>({ total_myr: '0', components: [] })
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -42,16 +44,20 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextAssets, nextAccounts, nextEvents, nextSummary] = await Promise.all([
+      const [nextAssets, nextAccounts, nextEvents, nextSummary, nextPortfolio, nextFees] = await Promise.all([
         api.assets(),
         api.accounts(),
         api.events(),
         api.summary(),
+        api.portfolio(),
+        api.fees(),
       ])
       setAssets(nextAssets)
       setAccounts(nextAccounts)
       setEvents(nextEvents)
       setSummary(nextSummary)
+      setPortfolio(nextPortfolio)
+      setFeeReport(nextFees)
       setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? null : null))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load CryptoSpend')
@@ -109,6 +115,7 @@ function App() {
               ['dashboard', 'Overview'],
               ['transactions', 'Transactions'],
               ['add', 'Add transaction'],
+              ['portfolio', 'Portfolio'],
               ['accounts', 'Accounts'],
             ] as [View, string][]
           ).map(([key, label]) => (
@@ -147,7 +154,9 @@ function App() {
           </section>
         )}
 
-        {ready && view === 'dashboard' && <Dashboard summary={summary} accounts={accounts} events={events} />}
+        {ready && view === 'dashboard' && (
+          <Dashboard summary={summary} feeReport={feeReport} accounts={accounts} events={events} />
+        )}
         {ready && view === 'transactions' && (
           <Transactions
             events={events}
@@ -165,6 +174,17 @@ function App() {
             accounts={accounts}
             busy={busy}
             onSubmit={(payload) => runAction(() => api.createManualEvent(payload))}
+            onTrade={(payload) => runAction(() => api.createTrade(payload))}
+            onTransfer={(payload) => runAction(() => api.createTransfer(payload))}
+          />
+        )}
+        {ready && view === 'portfolio' && (
+          <Portfolio
+            positions={portfolio}
+            feeReport={feeReport}
+            assets={assets}
+            busy={busy}
+            onRate={(payload) => runAction(() => api.createRate(payload))}
           />
         )}
         {ready && view === 'accounts' && (
@@ -182,7 +202,12 @@ function App() {
   )
 }
 
-function Dashboard({ summary, accounts, events }: { summary: Summary; accounts: Account[]; events: TransactionEvent[] }) {
+function Dashboard({ summary, feeReport, accounts, events }: {
+  summary: Summary
+  feeReport: FeeReport
+  accounts: Account[]
+  events: TransactionEvent[]
+}) {
   const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
   return (
     <div className="stack">
@@ -190,7 +215,7 @@ function Dashboard({ summary, accounts, events }: { summary: Summary; accounts: 
         <Metric label="Net worth (book)" value={formatMyr(summary.net_worth_myr)} accent />
         <Metric label="Income" value={formatMyr(summary.income_myr)} />
         <Metric label="Gross spending" value={formatMyr(summary.gross_spending_myr)} />
-        <Metric label="Net spending" value={formatMyr(summary.net_spending_myr)} />
+        <Metric label="Explicit fees" value={formatMyr(feeReport.total_myr)} />
       </section>
       <section className="dashboard-grid">
         <div className="panel">
@@ -335,6 +360,20 @@ function Transactions({
               </div>
             ))}
           </div>
+          {!!selected.fees.length && (
+            <>
+              <h3 className="detail-subtitle">Explicit fees</h3>
+              <div className="fee-list">
+                {selected.fees.map((fee) => (
+                  <div key={fee.id}>
+                    <strong>{fee.component_type.replaceAll('_', ' ')}</strong>
+                    <span>{fee.amount} {fee.asset_symbol}</span>
+                    <span>{formatMyr(fee.value_myr)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           {selected.status === 'POSTED' && !selected.reverses_event_id && (
             <button className="danger" onClick={() => onReverse(selected)}>Reverse event</button>
           )}
@@ -349,12 +388,17 @@ function AddTransaction({
   accounts,
   busy,
   onSubmit,
+  onTrade,
+  onTransfer,
 }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
-  onSubmit: (payload: Record<string, string | null>) => Promise<void>
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+  onTrade: (payload: Record<string, unknown>) => Promise<void>
+  onTransfer: (payload: Record<string, unknown>) => Promise<void>
 }) {
+  const [mode, setMode] = useState<'MANUAL' | 'TRADE' | 'TRANSFER'>('MANUAL')
   const [eventType, setEventType] = useState('SALARY')
   const [occurredAt, setOccurredAt] = useState(localDateTimeValue())
   const [description, setDescription] = useState('')
@@ -377,6 +421,23 @@ function AddTransaction({
       credit: ['ASSET', 'INCOME', 'EQUITY', 'GAIN_LOSS', 'CLEARING'],
     }
   }, [eventType])
+
+  if (mode === 'TRADE') {
+    return (
+      <section className="panel form-panel">
+        <EntryModeTabs mode={mode} onChange={setMode} />
+        <TradeForm assets={assets} accounts={accounts} busy={busy} onSubmit={onTrade} />
+      </section>
+    )
+  }
+  if (mode === 'TRANSFER') {
+    return (
+      <section className="panel form-panel">
+        <EntryModeTabs mode={mode} onChange={setMode} />
+        <TransferForm assets={assets} accounts={accounts} busy={busy} onSubmit={onTransfer} />
+      </section>
+    )
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -401,6 +462,7 @@ function AddTransaction({
 
   return (
     <section className="panel form-panel">
+      <EntryModeTabs mode={mode} onChange={setMode} />
       <div className="section-title">
         <div><span className="eyebrow">CONTROLLED COMMAND</span><h2>Add a balanced event</h2></div>
       </div>
@@ -469,6 +531,230 @@ function AddTransaction({
         <div className="wide form-actions"><button className="primary" disabled={busy}>{busy ? 'Posting…' : 'Post balanced event'}</button></div>
       </form>
     </section>
+  )
+}
+
+function EntryModeTabs({ mode, onChange }: {
+  mode: 'MANUAL' | 'TRADE' | 'TRANSFER'
+  onChange: (mode: 'MANUAL' | 'TRADE' | 'TRANSFER') => void
+}) {
+  return (
+    <div className="mode-tabs">
+      {(['MANUAL', 'TRADE', 'TRANSFER'] as const).map((item) => (
+        <button type="button" className={mode === item ? 'active' : ''} onClick={() => onChange(item)} key={item}>
+          {item}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function TradeForm({ assets, accounts, busy, onSubmit }: {
+  assets: Asset[]
+  accounts: Account[]
+  busy: boolean
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+}) {
+  const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
+  const expenseAccounts = accounts.filter((account) => account.account_type === 'EXPENSE')
+  const gainAccounts = accounts.filter((account) => account.account_type === 'GAIN_LOSS')
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const data = new FormData(form)
+    const value = (key: string) => String(data.get(key) ?? '')
+    const feeAmount = value('fee_amount')
+    await onSubmit({
+      occurred_at: new Date(value('occurred_at')).toISOString(),
+      account_id: value('account_id'),
+      sell_asset_id: value('sell_asset_id'),
+      sell_quantity: value('sell_quantity'),
+      buy_asset_id: value('buy_asset_id'),
+      buy_quantity: value('buy_quantity'),
+      execution_rate: value('execution_rate'),
+      gross_value_myr: value('gross_value_myr'),
+      order_id: value('order_id') || null,
+      description: value('description'),
+      gain_loss_account_id: value('gain_loss_account_id'),
+      fee: feeAmount ? {
+        component_type: value('fee_type'),
+        asset_id: value('fee_asset_id'),
+        amount: feeAmount,
+        value_myr: value('fee_value_myr'),
+        accounting_treatment: value('fee_treatment'),
+        included_in_funding_amount: value('fee_included') === 'on',
+        expense_account_id: value('fee_expense_account_id') || null,
+      } : null,
+    })
+    form.reset()
+  }
+
+  return (
+    <>
+      <div className="section-title">
+        <div><span className="eyebrow">FIFO DISPOSAL + ACQUISITION</span><h2>Record a trade</h2></div>
+      </div>
+      <p className="form-intro">Buy quantity is the net asset actually received. Gross MYR, explicit fee and FIFO basis remain separate.</p>
+      <form onSubmit={(event) => void submit(event)}>
+        <label>Occurred at<input name="occurred_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label>
+        <label>Exchange account<select name="account_id" required><option value="">Select account</option>{assetAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label>Sell asset<select name="sell_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+        <label>Sell quantity<input name="sell_quantity" inputMode="decimal" placeholder="0.25" required /></label>
+        <label>Buy asset<select name="buy_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+        <label>Net buy quantity<input name="buy_quantity" inputMode="decimal" placeholder="4241.50" required /></label>
+        <label>Execution rate<input name="execution_rate" inputMode="decimal" placeholder="17000" required /><small>buy asset / sell asset</small></label>
+        <label>Gross transaction value (MYR)<input name="gross_value_myr" inputMode="decimal" placeholder="4250" required /></label>
+        <label>Gain/loss account<select name="gain_loss_account_id" required><option value="">Select account</option>{gainAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label>Order ID<input name="order_id" placeholder="Optional" /></label>
+        <label className="wide">Description<input name="description" placeholder="Hata ETH/MYR sale" /></label>
+        <fieldset className="wide fee-fields">
+          <legend>Optional explicit fee</legend>
+          <label>Fee type<input name="fee_type" defaultValue="TRADING_FEE" /></label>
+          <label>Fee asset<select name="fee_asset_id"><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+          <label>Fee quantity<input name="fee_amount" inputMode="decimal" placeholder="8.50" /></label>
+          <label>Fee value (MYR)<input name="fee_value_myr" inputMode="decimal" placeholder="8.50" /></label>
+          <label>Treatment<select name="fee_treatment" defaultValue="EXPENSED"><option>EXPENSED</option><option>REDUCE_PROCEEDS</option><option>CAPITALIZED</option></select></label>
+          <label>Expense account<select name="fee_expense_account_id"><option value="">Select account</option>{expenseAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+          <label className="checkbox"><input name="fee_included" type="checkbox" /> Fee is already included in the funding/net amount</label>
+        </fieldset>
+        <div className="wide form-actions"><button className="primary" disabled={busy}>{busy ? 'Posting…' : 'Post trade'}</button></div>
+      </form>
+    </>
+  )
+}
+
+function TransferForm({ assets, accounts, busy, onSubmit }: {
+  assets: Asset[]
+  accounts: Account[]
+  busy: boolean
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+}) {
+  const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
+  const expenseAccounts = accounts.filter((account) => account.account_type === 'EXPENSE')
+  const gainAccounts = accounts.filter((account) => account.account_type === 'GAIN_LOSS')
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const data = new FormData(form)
+    const value = (key: string) => String(data.get(key) ?? '')
+    const feeAmount = value('fee_amount')
+    await onSubmit({
+      occurred_at: new Date(value('occurred_at')).toISOString(),
+      source_account_id: value('source_account_id'),
+      destination_account_id: value('destination_account_id'),
+      asset_id: value('asset_id'),
+      sent_quantity: value('sent_quantity'),
+      received_quantity: value('received_quantity'),
+      network: value('network') || null,
+      tx_hash: value('tx_hash') || null,
+      description: value('description'),
+      gain_loss_account_id: value('gain_loss_account_id'),
+      fee: feeAmount ? {
+        component_type: value('fee_type'),
+        asset_id: value('fee_asset_id'),
+        amount: feeAmount,
+        value_myr: value('fee_value_myr'),
+        accounting_treatment: 'EXPENSED',
+        expense_account_id: value('fee_expense_account_id'),
+      } : null,
+    })
+    form.reset()
+  }
+
+  return (
+    <>
+      <div className="section-title">
+        <div><span className="eyebrow">COST-PRESERVING MOVE</span><h2>Record an own-account transfer</h2></div>
+      </div>
+      <p className="form-intro">Transferred lots keep their original acquisition date and basis. Only an actual fee reduces global quantity.</p>
+      <form onSubmit={(event) => void submit(event)}>
+        <label>Occurred at<input name="occurred_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label>
+        <label>Asset<select name="asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+        <label>Source account<select name="source_account_id" required><option value="">Select account</option>{assetAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label>Destination account<select name="destination_account_id" required><option value="">Select account</option>{assetAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label>Sent quantity<input name="sent_quantity" inputMode="decimal" placeholder="1000" required /></label>
+        <label>Received quantity<input name="received_quantity" inputMode="decimal" placeholder="1000" required /></label>
+        <label>Network<input name="network" placeholder="Ethereum" /></label>
+        <label>Transaction hash<input name="tx_hash" placeholder="Optional" /></label>
+        <label>Gain/loss account<select name="gain_loss_account_id" required><option value="">Select account</option>{gainAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label>Description<input name="description" placeholder="Wallet to Hata" /></label>
+        <fieldset className="wide fee-fields">
+          <legend>Optional withdrawal / network fee</legend>
+          <label>Fee type<select name="fee_type" defaultValue="NETWORK_FEE"><option>NETWORK_FEE</option><option>WITHDRAWAL_FEE</option></select></label>
+          <label>Fee asset<select name="fee_asset_id"><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+          <label>Fee quantity<input name="fee_amount" inputMode="decimal" placeholder="0.0003" /></label>
+          <label>Fee value (MYR)<input name="fee_value_myr" inputMode="decimal" placeholder="3.00" /></label>
+          <label>Expense account<select name="fee_expense_account_id"><option value="">Select account</option>{expenseAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        </fieldset>
+        <div className="wide form-actions"><button className="primary" disabled={busy}>{busy ? 'Posting…' : 'Post transfer'}</button></div>
+      </form>
+    </>
+  )
+}
+
+function Portfolio({ positions, feeReport, assets, busy, onRate }: {
+  positions: PortfolioPosition[]
+  feeReport: FeeReport
+  assets: Asset[]
+  busy: boolean
+  onRate: (payload: Record<string, unknown>) => Promise<void>
+}) {
+  async function submitRate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    await onRate({
+      base_asset_id: String(data.get('base_asset_id')),
+      quote_asset_id: String(data.get('quote_asset_id')),
+      rate: String(data.get('rate')),
+      observed_at: new Date(String(data.get('observed_at'))).toISOString(),
+      source: String(data.get('source')),
+      rate_type: 'MARKET',
+    })
+  }
+
+  return (
+    <div className="stack">
+      <section className="panel table-panel">
+        <div className="section-title"><div><span className="eyebrow">FIFO PORTFOLIO</span><h2>Holdings and P&amp;L</h2></div><span className="count">{positions.length}</span></div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Asset</th><th>Quantity</th><th>Cost basis</th><th>Average cost</th><th>Market value</th><th>Unrealized</th><th>Realized</th><th>Quality</th></tr></thead>
+            <tbody>{positions.map((position) => (
+              <tr key={position.asset_id}>
+                <td><strong>{position.symbol}</strong></td>
+                <td>{position.quantity}</td>
+                <td>{formatMyr(position.cost_basis_myr)}</td>
+                <td>{position.average_cost_myr ? formatMyr(position.average_cost_myr) : '—'}</td>
+                <td>{position.market_value_myr ? formatMyr(position.market_value_myr) : 'Missing rate'}</td>
+                <td>{position.unrealized_gain_loss_myr ? formatMyr(position.unrealized_gain_loss_myr) : '—'}</td>
+                <td>{formatMyr(position.realized_gain_loss_myr)}</td>
+                <td><span className={`pill ${position.basis_complete ? '' : 'reversed'}`}>{position.basis_complete ? 'EXACT' : 'INCOMPLETE'}</span></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!positions.length && <Empty text="Post an acquisition to create the first FIFO lot." />}
+        </div>
+      </section>
+      <section className="split-forms">
+        <div className="panel">
+          <span className="eyebrow">EXPLICIT COSTS</span><h2>Fee leakage</h2>
+          <strong className="large-value">{formatMyr(feeReport.total_myr)}</strong>
+          <div className="fee-breakdown">{feeReport.components.map((fee) => <div key={fee.component_type}><span>{fee.component_type.replaceAll('_', ' ')}</span><strong>{formatMyr(fee.value_myr)}</strong></div>)}</div>
+          {!feeReport.components.length && <Empty text="No explicit fees recorded." />}
+        </div>
+        <form className="panel compact-form" onSubmit={(event) => void submitRate(event)}>
+          <span className="eyebrow">REFERENCE PRICE</span><h2>Add market rate</h2>
+          <label>Base asset<select name="base_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+          <label>Quote asset<select name="quote_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+          <label>Rate<input name="rate" inputMode="decimal" placeholder="17000" required /><small>quote asset / base asset</small></label>
+          <label>Observed at<input name="observed_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label>
+          <label>Source<input name="source" defaultValue="Manual market reference" required /></label>
+          <button className="primary" disabled={busy}>Save snapshot</button>
+        </form>
+      </section>
+    </div>
   )
 }
 
