@@ -1,0 +1,14 @@
+{
+  "salary_usdt": {"quantity": "1000", "rate": "4.25", "book_amount_myr": "4250"},
+  "salary_btc": {"quantity": "0.02", "rate": "300000", "book_amount_myr": "6000"},
+  "wallet_transfer": {"quantity": "1000", "fee_asset": "ETH", "fee_quantity": "0.0003"},
+  "hata_sale": {"quantity": "0.25", "gross_myr": "4250", "fee_myr": "8.50", "net_myr": "4241.50"},
+  "card_reversal": {"authorization_myr": "100", "monthly_spending_myr": "0"},
+  "card_settlement": {"funding_asset": "USDT", "funding_quantity": "23.96", "merchant_myr": "100"},
+  "card_refund": {"original_asset": "USDT", "refund_asset": "USD", "partial": true},
+  "cashback": {"asset": "USDT", "quantity": "1", "pending_net_change_myr": "0"},
+  "cash_purchase": {"bank_to_cash_is_expense": false, "cash_to_merchant_is_expense": true},
+  "duplicate_import": {"expected_second_import_events": 0},
+  "reconciliation": {"auto_adjust": false},
+  "backup_restore": {"balances_and_hashes_equal": true}
+}
