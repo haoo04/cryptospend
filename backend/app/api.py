@@ -1,0 +1,280 @@
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, selectinload
+
+from app.database import get_session
+from app.enums import AccountType
+from app.ledger import (
+    DomainError,
+    account_balances,
+    add_audit,
+    create_draft,
+    create_manual_event,
+    get_event,
+    post_event,
+    report_totals,
+    reverse_event,
+    utc_text,
+)
+from app.models import Account, Asset, LedgerEntry, Setting, TransactionEvent
+from app.money import micros_to_myr
+from app.schemas import (
+    AccountCreate,
+    AccountRead,
+    AssetCreate,
+    AssetRead,
+    EventDraftCreate,
+    EventRead,
+    ManualEventCreate,
+    OnboardingCreate,
+    ReverseCreate,
+    SettingsRead,
+    SummaryRead,
+)
+
+router = APIRouter(prefix="/api")
+
+
+def event_read(event: TransactionEvent) -> EventRead:
+    return EventRead(
+        id=event.id,
+        event_type=event.event_type,
+        status=event.status,
+        occurred_at=event.occurred_at,
+        time_precision=event.time_precision,
+        description=event.description,
+        category=event.category,
+        source=event.source,
+        external_id=event.external_id,
+        transaction_value_myr=micros_to_myr(event.transaction_value_myr)
+        if event.transaction_value_myr is not None
+        else None,
+        reference_value_myr=micros_to_myr(event.reference_value_myr)
+        if event.reference_value_myr is not None
+        else None,
+        reverses_event_id=event.reverses_event_id,
+        reversed_by_event_id=event.reversed_by_event_id,
+        posted_at=event.posted_at,
+        entries=[
+            {
+                "id": entry.id,
+                "account_id": entry.account_id,
+                "account_name": entry.account.name,
+                "asset_id": entry.asset_id,
+                "asset_symbol": entry.asset.symbol,
+                "direction": entry.direction,
+                "quantity": entry.quantity,
+                "book_amount_myr": micros_to_myr(entry.book_amount_myr),
+                "transaction_value_myr": micros_to_myr(entry.transaction_value_myr)
+                if entry.transaction_value_myr is not None
+                else None,
+                "reference_value_myr": micros_to_myr(entry.reference_value_myr)
+                if entry.reference_value_myr is not None
+                else None,
+                "valuation_rate": entry.valuation_rate,
+                "valuation_source": entry.valuation_source,
+            }
+            for entry in event.entries
+        ],
+    )
+
+
+@router.get("/assets", response_model=list[AssetRead])
+def list_assets(session: Session = Depends(get_session)) -> list[Asset]:
+    return list(session.scalars(select(Asset).order_by(Asset.symbol, Asset.chain)).all())
+
+
+@router.post("/assets", response_model=AssetRead, status_code=201)
+def create_asset(payload: AssetCreate, session: Session = Depends(get_session)) -> Asset:
+    asset = Asset(**payload.model_dump())
+    session.add(asset)
+    session.commit()
+    session.refresh(asset)
+    return asset
+
+
+@router.get("/accounts", response_model=list[AccountRead])
+def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
+    balances = account_balances(session)
+    return [
+        {
+            "id": account.id,
+            "name": account.name,
+            "account_type": account.account_type,
+            "provider": account.provider,
+            "closed": account.closed,
+            "balances": balances.get(account.id, []),
+        }
+        for account in session.scalars(select(Account).order_by(Account.account_type, Account.name))
+    ]
+
+
+@router.post("/accounts", response_model=AccountRead, status_code=201)
+def create_account(payload: AccountCreate, session: Session = Depends(get_session)) -> dict:
+    account = Account(name=payload.name.strip(), account_type=payload.account_type.value, provider=payload.provider)
+    session.add(account)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise DomainError("an account with this identity already exists", 409) from exc
+    return {
+        "id": account.id,
+        "name": account.name,
+        "account_type": account.account_type,
+        "provider": account.provider,
+        "closed": account.closed,
+        "balances": [],
+    }
+
+
+@router.post("/onboarding", response_model=SettingsRead)
+def onboarding(payload: OnboardingCreate, session: Session = Depends(get_session)) -> Setting:
+    setting = session.get(Setting, "default")
+    if setting is None:
+        setting = Setting(id="default")
+        session.add(setting)
+    setting.reporting_currency = payload.reporting_currency.strip().upper()
+    setting.timezone = payload.timezone.strip()
+
+    defaults = [
+        ("MYR", "Malaysian Ringgit", 6),
+        ("USD", "US Dollar", 6),
+        ("USDT", "Tether", 18),
+        ("BTC", "Bitcoin", 18),
+        ("ETH", "Ether", 18),
+    ]
+    existing_symbols = set(session.scalars(select(Asset.symbol).where(Asset.chain.is_(None))))
+    for symbol, name, decimals in defaults:
+        if symbol not in existing_symbols:
+            session.add(Asset(symbol=symbol, name=name, decimals=decimals))
+
+    requested_accounts = payload.accounts or [
+        AccountCreate(name="Bank", account_type=AccountType.ASSET),
+        AccountCreate(name="Cash", account_type=AccountType.ASSET),
+        AccountCreate(name="Crypto Wallet", account_type=AccountType.ASSET),
+        AccountCreate(name="Salary", account_type=AccountType.INCOME),
+        AccountCreate(name="Other Income", account_type=AccountType.INCOME),
+        AccountCreate(name="General Expense", account_type=AccountType.EXPENSE),
+        AccountCreate(name="Opening Balances", account_type=AccountType.EQUITY),
+        AccountCreate(name="Realized Gain/Loss", account_type=AccountType.GAIN_LOSS),
+        AccountCreate(name="Clearing", account_type=AccountType.CLEARING),
+    ]
+    existing_accounts = {(row.name, row.account_type, row.provider) for row in session.scalars(select(Account))}
+    for item in requested_accounts:
+        identity = (item.name.strip(), item.account_type.value, item.provider)
+        if identity not in existing_accounts:
+            session.add(Account(name=identity[0], account_type=identity[1], provider=identity[2]))
+    add_audit(session, "SETTINGS_INITIALIZED", details={"timezone": setting.timezone})
+    session.commit()
+    session.refresh(setting)
+    return setting
+
+
+@router.get("/settings", response_model=SettingsRead)
+def get_settings(session: Session = Depends(get_session)) -> Setting:
+    setting = session.get(Setting, "default")
+    if setting is None:
+        raise DomainError("onboarding has not been completed", 404)
+    return setting
+
+
+@router.get("/events", response_model=list[EventRead])
+def list_events(
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+) -> list[EventRead]:
+    statement = (
+        select(TransactionEvent)
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
+        .order_by(TransactionEvent.occurred_at.desc())
+        .limit(limit)
+    )
+    if status:
+        statement = statement.where(TransactionEvent.status == status.upper())
+    return [event_read(event) for event in session.scalars(statement)]
+
+
+@router.get("/events/{event_id}", response_model=EventRead)
+def event_detail(event_id: str, session: Session = Depends(get_session)) -> EventRead:
+    return event_read(get_event(session, event_id))
+
+
+@router.post("/events/drafts", response_model=EventRead, status_code=201)
+def draft_event(payload: EventDraftCreate, session: Session = Depends(get_session)) -> EventRead:
+    event = create_draft(session, payload)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.post("/events/manual", response_model=EventRead, status_code=201)
+def manual_event(payload: ManualEventCreate, session: Session = Depends(get_session)) -> EventRead:
+    event = create_manual_event(session, payload)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.post("/events/{event_id}/post", response_model=EventRead)
+def post_draft(event_id: str, session: Session = Depends(get_session)) -> EventRead:
+    event = post_event(session, get_event(session, event_id))
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.post("/events/{event_id}/reverse", response_model=EventRead, status_code=201)
+def reverse_posted(event_id: str, payload: ReverseCreate, session: Session = Depends(get_session)) -> EventRead:
+    event = reverse_event(session, get_event(session, event_id), payload.reason)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+def report_window(start: datetime | None, end: datetime | None) -> tuple[str | None, str | None]:
+    return (utc_text(start) if start else None, utc_text(end) if end else None)
+
+
+@router.get("/reports/net-worth")
+def net_worth(
+    as_of: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    _, end = report_window(None, as_of)
+    totals = report_totals(session, end=end)
+    return {"net_worth_myr": micros_to_myr(totals["assets"] - totals["liabilities"])}
+
+
+@router.get("/reports/income-expense")
+def income_expense(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    start_text, end_text = report_window(start, end)
+    totals = report_totals(session, start_text, end_text)
+    return {
+        "income_myr": micros_to_myr(totals["income"]),
+        "expense_myr": micros_to_myr(totals["expense"]),
+        "net_income_myr": micros_to_myr(totals["income"] - totals["expense"]),
+    }
+
+
+@router.get("/reports/summary", response_model=SummaryRead)
+def summary(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> SummaryRead:
+    period_start, period_end = report_window(start, end)
+    period = report_totals(session, period_start, period_end)
+    lifetime = report_totals(session, end=period_end)
+    return SummaryRead(
+        net_worth_myr=micros_to_myr(lifetime["assets"] - lifetime["liabilities"]),
+        income_myr=micros_to_myr(period["income"]),
+        expense_myr=micros_to_myr(period["expense"]),
+        gross_spending_myr=micros_to_myr(period["expense"]),
+        net_spending_myr=micros_to_myr(period["expense"]),
+    )
