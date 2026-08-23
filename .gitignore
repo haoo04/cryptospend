@@ -1,3 +1,35 @@
+# Project-local runtime data
+backend/data/*
+!backend/data/.gitkeep
+backend/backups/
+
+# SQLite databases and sidecar files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Node / React / Vite
+node_modules/
+.npm/
+dist-ssr/
+*.tsbuildinfo
+.eslintcache
+vite.config.*.timestamp-*
+frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -149,6 +181,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .envrc
 .venv
 env/
@@ -181,12 +216,8 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# PyCharm
-#   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#   and can be added to the global gitignore or merged into this file.  For a more nuclear
-#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
-# .idea/
+# JetBrains IDEs
+.idea/
 
 # Abstra
 #   Abstra is an AI-powered process automation framework.
@@ -194,12 +225,15 @@ cython_debug/
 #   Learn more at https://abstra.io/docs
 .abstra/
 
-# Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+# Visual Studio Code; keep shared extension recommendations trackable
+.vscode/*
+!.vscode/extensions.json
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
