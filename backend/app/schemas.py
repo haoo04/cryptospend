@@ -168,6 +168,21 @@ class SettingsRead(BaseModel):
     cost_method: str
 
 
+class GoogleDriveBackupStatusRead(BaseModel):
+    configured: bool
+    supported: bool
+    connected: bool
+    folder_name: str
+    message: str | None = None
+
+
+class GoogleDriveBackupRead(BaseModel):
+    id: str
+    name: str
+    web_view_link: str | None
+    created_at: str
+
+
 class SummaryRead(BaseModel):
     net_worth_myr: str
     income_myr: str

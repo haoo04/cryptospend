@@ -43,3 +43,20 @@ def test_database_migrates_backs_up_and_restores(tmp_path) -> None:
     restored = restore_database(backup, tmp_path / "restored.db")
     with sqlite3.connect(restored) as connection:
         assert connection.execute("SELECT value FROM sample").fetchone() == ("preserved",)
+
+
+def test_database_backup_includes_committed_wal_rows(tmp_path) -> None:
+    database = tmp_path / "wal-source.db"
+    source_connection = sqlite3.connect(database)
+    try:
+        assert source_connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        source_connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
+        source_connection.execute("INSERT INTO sample VALUES ('in-wal')")
+        source_connection.commit()
+
+        backup = backup_database(database, tmp_path / "wal-backup.db")
+    finally:
+        source_connection.close()
+
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("SELECT value FROM sample").fetchone() == ("in-wal",)

@@ -8,6 +8,8 @@ import type {
   CardRecord,
   ChannelComparison,
   FeeReport,
+  GoogleDriveBackupResult,
+  GoogleDriveBackupStatus,
   JourneyReport,
   MonthlyReport,
   PortfolioPosition,
@@ -20,7 +22,7 @@ import { formatMyr, localDateTimeValue } from './format'
 import ReportsCenter from './ReportsCenter'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports'
+type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'settings'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -28,6 +30,14 @@ const emptySummary: Summary = {
   expense_myr: '0',
   gross_spending_myr: '0',
   net_spending_myr: '0',
+}
+
+const emptyBackupStatus: GoogleDriveBackupStatus = {
+  configured: false,
+  supported: true,
+  connected: false,
+  folder_name: 'CryptoSpend Backups',
+  message: null,
 }
 
 function reportingMonth() {
@@ -49,6 +59,8 @@ function App() {
   const [journeys, setJourneys] = useState<JourneyReport[]>([])
   const [snapshots, setSnapshots] = useState<ReportSnapshot[]>([])
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
+  const [backupStatus, setBackupStatus] = useState<GoogleDriveBackupStatus>(emptyBackupStatus)
+  const [lastBackup, setLastBackup] = useState<GoogleDriveBackupResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -99,10 +111,26 @@ function App() {
     }
   }, [])
 
+  const refreshBackupStatus = useCallback(async () => {
+    try {
+      const nextStatus = await api.googleDriveBackupStatus()
+      setBackupStatus(nextStatus)
+      return nextStatus
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to load Google Drive status')
+      return null
+    }
+  }, [])
+
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshBackupStatus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshBackupStatus])
 
   async function initialize() {
     setBusy(true)
@@ -143,6 +171,23 @@ function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function runBackup() {
+    setBusy(true)
+    setError('')
+    try {
+      setLastBackup(await api.uploadGoogleDriveBackup())
+      await refreshBackupStatus()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Backup failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openGoogleDriveConnection() {
+    window.open(api.googleDriveConnectUrl(), '_blank', 'noopener,noreferrer')
   }
 
   async function loadMonthly(month: string) {
@@ -192,6 +237,7 @@ function App() {
               ['cards', 'Card costs'],
               ['reports', 'Reports'],
               ['accounts', 'Accounts'],
+              ['settings', 'Settings'],
             ] as [View, string][]
           ).map(([key, label]) => (
             <button className={view === key ? 'active' : ''} key={key} onClick={() => setView(key)}>
@@ -212,9 +258,18 @@ function App() {
             <span className="eyebrow">PERSONAL FINANCE / MYR</span>
             <h1>{view === 'dashboard' ? 'Financial overview' : view}</h1>
           </div>
-          <button className="secondary" onClick={() => void refresh()} disabled={loading || busy}>
-            Refresh
-          </button>
+          <div className="topbar-actions">
+            <button className="secondary" onClick={() => void refresh()} disabled={loading || busy}>
+              Refresh
+            </button>
+            <button
+              className="primary"
+              onClick={() => (backupStatus.connected ? void runBackup() : setView('settings'))}
+              disabled={loading || busy}
+            >
+              {backupStatus.connected ? (busy ? 'Backing up…' : 'Backup database') : 'Set up backup'}
+            </button>
+          </div>
         </header>
 
         {error && <div className="alert">{error}</div>}
@@ -299,6 +354,16 @@ function App() {
             busy={busy}
             onCreateAccount={(payload) => runAction(() => api.createAccount(payload))}
             onCreateAsset={(payload) => runAction(() => api.createAsset(payload))}
+          />
+        )}
+        {view === 'settings' && (
+          <GoogleDriveSettings
+            status={backupStatus}
+            lastBackup={lastBackup}
+            busy={busy}
+            onConnect={openGoogleDriveConnection}
+            onBackup={runBackup}
+            onRefreshStatus={refreshBackupStatus}
           />
         )}
       </main>
@@ -958,6 +1023,91 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
       <section className="panel asset-strip">
         <span className="eyebrow">ACTIVE ASSETS</span>
         <div>{assets.map((asset) => <span key={asset.id}>{asset.symbol}</span>)}</div>
+      </section>
+    </div>
+  )
+}
+
+export function GoogleDriveSettings({
+  status,
+  lastBackup,
+  busy,
+  onConnect,
+  onBackup,
+  onRefreshStatus,
+}: {
+  status: GoogleDriveBackupStatus
+  lastBackup: GoogleDriveBackupResult | null
+  busy: boolean
+  onConnect: () => void
+  onBackup: () => Promise<void>
+  onRefreshStatus: () => Promise<GoogleDriveBackupStatus | null>
+}) {
+  const [connecting, setConnecting] = useState(false)
+
+  useEffect(() => {
+    if (!connecting) return
+    let attempts = 0
+    const timer = window.setInterval(() => {
+      attempts += 1
+      void onRefreshStatus().then((nextStatus) => {
+        if (nextStatus?.connected || attempts >= 30) setConnecting(false)
+      })
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [connecting, onRefreshStatus])
+
+  function connect() {
+    setConnecting(true)
+    onConnect()
+  }
+
+  return (
+    <div className="stack">
+      <section className="panel backup-panel">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">CLOUD BACKUP</span>
+            <h2>Google Drive</h2>
+          </div>
+          <span className={`pill ${status.connected ? 'posted' : 'reversed'}`}>
+            {status.connected ? 'CONNECTED' : status.configured ? 'READY TO CONNECT' : 'NOT CONFIGURED'}
+          </span>
+        </div>
+        <p className="form-intro">
+          Database snapshots are uploaded to the <strong>{status.folder_name}</strong> folder. Each backup is kept as a new file.
+        </p>
+        {!status.supported && <p className="backup-message">{status.message}</p>}
+        {status.supported && !status.configured && (
+          <p className="backup-message">
+            Set <code>CRYPTOSPEND_GOOGLE_CLIENT_SECRETS_FILE</code> to your Google Desktop OAuth JSON file before connecting.
+          </p>
+        )}
+        {status.supported && status.configured && !status.connected && status.message && (
+          <p className="backup-message">{status.message}</p>
+        )}
+        <div className="backup-actions">
+          <button className="secondary" onClick={() => void onRefreshStatus()} disabled={busy || connecting}>
+            Refresh status
+          </button>
+          <button className="primary" onClick={connect} disabled={busy || connecting || !status.supported || !status.configured}>
+            {connecting ? 'Waiting for Google…' : status.connected ? 'Reconnect Google Drive' : 'Connect Google Drive'}
+          </button>
+          <button className="primary" onClick={() => void onBackup()} disabled={busy || !status.connected}>
+            {busy ? 'Uploading…' : 'Backup database'}
+          </button>
+        </div>
+        {lastBackup && (
+          <div className="backup-result" role="status">
+            <strong>{lastBackup.name}</strong>
+            <span>Uploaded at {new Date(lastBackup.created_at).toLocaleString()}</span>
+            {lastBackup.web_view_link && (
+              <a href={lastBackup.web_view_link} target="_blank" rel="noreferrer">
+                Open in Google Drive
+              </a>
+            )}
+          </div>
+        )}
       </section>
     </div>
   )

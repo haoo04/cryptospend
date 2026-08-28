@@ -259,6 +259,21 @@ export type ChannelComparison = {
   note: string
 }
 
+export type GoogleDriveBackupStatus = {
+  configured: boolean
+  supported: boolean
+  connected: boolean
+  folder_name: string
+  message: string | null
+}
+
+export type GoogleDriveBackupResult = {
+  id: string
+  name: string
+  web_view_link: string | null
+  created_at: string
+}
+
 const apiRoot = import.meta.env.VITE_API_URL ?? '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -286,6 +301,10 @@ export const api = {
   monthly: (month: string) => request<MonthlyReport>(`/reports/monthly?month=${encodeURIComponent(month)}`),
   snapshots: () => request<ReportSnapshot[]>('/reports/monthly-snapshots'),
   journeys: () => request<JourneyReport[]>('/journeys'),
+  googleDriveBackupStatus: () => request<GoogleDriveBackupStatus>('/backups/google-drive/status'),
+  googleDriveConnectUrl: () => `${apiRoot}/backups/google-drive/connect`,
+  uploadGoogleDriveBackup: () =>
+    request<GoogleDriveBackupResult>('/backups/google-drive/upload', { method: 'POST' }),
   onboard: () => request('/onboarding', { method: 'POST', body: '{}' }),
   createAccount: (payload: {
     name: string

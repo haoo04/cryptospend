@@ -134,6 +134,12 @@ main {
   margin-bottom: 28px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 h1,
 h2,
 h3,
@@ -350,6 +356,51 @@ button.danger {
 button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.backup-panel {
+  max-width: 820px;
+}
+
+.backup-message {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: #f5f7f4;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.backup-message code {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.backup-actions {
+  margin-top: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.backup-result {
+  margin-top: 20px;
+  padding-top: 16px;
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.backup-result span {
+  color: var(--muted);
+}
+
+.backup-result a {
+  color: var(--green);
+  font-weight: 800;
+  text-decoration: none;
 }
 
 .transactions-layout {
@@ -1033,6 +1084,11 @@ select:focus {
 
   .local-note {
     display: none;
+  }
+
+  .topbar-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   main {

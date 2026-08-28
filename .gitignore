@@ -1,2 +1,4 @@
 AGENTS.md
 development-plan/
+backend/data/
+*.dpapi

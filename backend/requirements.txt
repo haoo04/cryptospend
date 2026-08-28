@@ -5,3 +5,5 @@ alembic
 pydantic
 pydantic-settings
 tzdata
+google-api-python-client
+google-auth-oauthlib

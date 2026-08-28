@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -20,6 +21,13 @@ from app.cards import (
 from app.cost_basis import portfolio_positions
 from app.database import get_session
 from app.enums import AccountChannel, AccountType
+from app.google_drive import (
+    GoogleDriveError,
+    begin_authorization,
+    complete_authorization,
+    get_backup_status,
+    upload_database_backup,
+)
 from app.ledger import (
     DomainError,
     account_balances,
@@ -72,6 +80,8 @@ from app.schemas import (
     CostLotRead,
     EventDraftCreate,
     EventRead,
+    GoogleDriveBackupRead,
+    GoogleDriveBackupStatusRead,
     JourneyCreate,
     JourneyEventCreate,
     ManualEventCreate,
@@ -154,6 +164,49 @@ def event_read(event: TransactionEvent) -> EventRead:
 @router.get("/assets", response_model=list[AssetRead])
 def list_assets(session: Session = Depends(get_session)) -> list[Asset]:
     return list(session.scalars(select(Asset).order_by(Asset.symbol, Asset.chain)).all())
+
+
+@router.get("/backups/google-drive/status", response_model=GoogleDriveBackupStatusRead)
+def google_drive_backup_status() -> dict:
+    return get_backup_status()
+
+
+@router.get("/backups/google-drive/connect")
+def connect_google_drive() -> RedirectResponse:
+    try:
+        return RedirectResponse(begin_authorization(), status_code=302)
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def oauth_callback_page(success: bool, message: str) -> str:
+    title = "Google Drive connected" if success else "Google Drive connection failed"
+    return (
+        f"<!doctype html><html><head><meta charset='utf-8'><title>{title}</title></head>"
+        f"<body><h1>{title}</h1><p>{message}</p>"
+        "<p>You can close this window and return to CryptoSpend.</p></body></html>"
+    )
+
+
+@router.get("/backups/google-drive/oauth/callback", response_class=HTMLResponse)
+def google_drive_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    try:
+        complete_authorization(code, state, error)
+    except GoogleDriveError as exc:
+        return HTMLResponse(oauth_callback_page(False, exc.message), status_code=exc.status_code)
+    return HTMLResponse(oauth_callback_page(True, "Google Drive is ready for database backups."))
+
+
+@router.post("/backups/google-drive/upload", response_model=GoogleDriveBackupRead)
+def upload_google_drive_backup() -> dict[str, str | None]:
+    try:
+        return upload_database_backup()
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/assets", response_model=AssetRead, status_code=201)

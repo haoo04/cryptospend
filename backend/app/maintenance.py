@@ -13,11 +13,16 @@ def backup_database(source: Path, destination: Path) -> Path:
     if not source.exists():
         raise FileNotFoundError(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source) as source_connection, sqlite3.connect(destination) as destination_connection:
+    source_connection = sqlite3.connect(source)
+    destination_connection = sqlite3.connect(destination)
+    try:
         source_connection.backup(destination_connection)
         result = destination_connection.execute("PRAGMA integrity_check").fetchone()
         if result != ("ok",):
             raise RuntimeError("backup integrity check failed")
+    finally:
+        destination_connection.close()
+        source_connection.close()
     return destination
 
 
