@@ -1,0 +1,11 @@
+{
+  "name": "cryptospend",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "concurrently -k --names frontend,backend --prefix-colors blue,green \"npm.cmd --prefix frontend run dev\" \"cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
