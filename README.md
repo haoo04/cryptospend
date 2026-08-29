@@ -31,12 +31,13 @@ Google Drive backup is optional. The application continues to work locally when 
    .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
    ```
 
-4. In the same PowerShell session used to start the backend, set the client path:
+4. Edit `backend/.env` and set the client path:
 
-   ```powershell
-   $env:CRYPTOSPEND_GOOGLE_CLIENT_SECRETS_FILE = 'C:\private\google-drive-client.json'
+   ```dotenv
+   CRYPTOSPEND_GOOGLE_CLIENT_SECRETS_FILE=C:/private/google-drive-client.json
    ```
 
+   The backend loads this file at startup. An environment variable already set in the process takes precedence over the `.env` value.
    The default callback is `http://127.0.0.1:8000/api/backups/google-drive/oauth/callback`. Set `CRYPTOSPEND_GOOGLE_DRIVE_REDIRECT_URI` if the backend uses another local URL.
 5. Start CryptoSpend, open **Settings**, and choose **Connect Google Drive**.
 6. After approving access in the browser, choose **Backup database**. Each backup is uploaded as a new timestamped file in the `CryptoSpend Backups` folder.

@@ -4,6 +4,7 @@ sqlalchemy
 alembic
 pydantic
 pydantic-settings
+python-dotenv
 tzdata
 google-api-python-client
 google-auth-oauthlib
