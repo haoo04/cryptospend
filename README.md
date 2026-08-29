@@ -2,6 +2,10 @@
 
 Local-first personal crypto accounting for MYR reporting. The backend is the authority for all financial calculations; decimal API values are strings and MYR book amounts are stored as integer micros.
 
+## User guide
+
+[新手双语教学 / Bilingual getting-started guide](docs/getting-started-bilingual.md)
+
 ## Local development
 
 ```powershell
