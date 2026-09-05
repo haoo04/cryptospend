@@ -552,7 +552,7 @@ function Transactions({
   )
 }
 
-function AddTransaction({
+export function AddTransaction({
   assets,
   accounts,
   busy,
@@ -590,6 +590,8 @@ function AddTransaction({
       credit: ['ASSET', 'INCOME', 'EQUITY', 'GAIN_LOSS', 'CLEARING'],
     }
   }, [eventType])
+  const selectedAsset = assets.find((item) => item.id === asset)
+  const isMyrAsset = selectedAsset?.symbol === 'MYR'
 
   if (mode === 'TRADE') {
     return (
@@ -618,7 +620,7 @@ function AddTransaction({
       debit_account_id: debit,
       credit_account_id: credit,
       asset_id: asset,
-      quantity,
+      quantity: isMyrAsset ? bookAmount : quantity,
       book_amount_myr: bookAmount,
       valuation_rate: rate || null,
       valuation_source: rate ? rateSource : null,
@@ -676,14 +678,23 @@ function AddTransaction({
             {assets.map((item) => <option value={item.id} key={item.id}>{item.symbol} · {item.name}</option>)}
           </select>
         </label>
-        <label>
-          Original quantity
-          <input inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="1000.00000000" required />
-        </label>
-        <label>
-          Book amount (MYR)
-          <input inputMode="decimal" value={bookAmount} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
-        </label>
+        {isMyrAsset ? (
+          <label>
+            MYR amount
+            <input inputMode="decimal" value={bookAmount} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
+          </label>
+        ) : (
+          <>
+            <label>
+              Original quantity
+              <input inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="1000.00000000" required />
+            </label>
+            <label>
+              Book amount (MYR)
+              <input inputMode="decimal" value={bookAmount} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
+            </label>
+          </>
+        )}
         <label>
           Asset/MYR rate
           <input inputMode="decimal" value={rate} onChange={(event) => setRate(event.target.value)} placeholder="4.25" />
