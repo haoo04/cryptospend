@@ -20,7 +20,7 @@ afterEach(cleanup)
 
 describe('manual MYR transaction entry', () => {
   it('uses one MYR amount for both quantity and book amount', async () => {
-    const onSubmit = vi.fn(async () => undefined)
+    const onSubmit = vi.fn(async () => true)
 
     render(
       <AddTransaction
@@ -28,8 +28,8 @@ describe('manual MYR transaction entry', () => {
         accounts={accounts}
         busy={false}
         onSubmit={onSubmit}
-        onTrade={vi.fn(async () => undefined)}
-        onTransfer={vi.fn(async () => undefined)}
+        onTrade={vi.fn(async () => true)}
+        onTransfer={vi.fn(async () => true)}
       />,
     )
 
@@ -60,9 +60,9 @@ describe('manual MYR transaction entry', () => {
         assets={assets}
         accounts={accounts}
         busy={false}
-        onSubmit={vi.fn(async () => undefined)}
-        onTrade={vi.fn(async () => undefined)}
-        onTransfer={vi.fn(async () => undefined)}
+        onSubmit={vi.fn(async () => true)}
+        onTrade={vi.fn(async () => true)}
+        onTransfer={vi.fn(async () => true)}
       />,
     )
 

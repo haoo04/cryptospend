@@ -5,8 +5,8 @@ import type { Category } from './api'
 type Props = {
   categories: Category[]
   busy: boolean
-  onCreate: (payload: { name: string; kind: Category['kind'] }) => Promise<void>
-  onUpdate: (id: string, payload: { name?: string; active?: boolean }) => Promise<void>
+  onCreate: (payload: { name: string; kind: Category['kind'] }) => Promise<boolean>
+  onUpdate: (id: string, payload: { name?: string; active?: boolean }) => Promise<boolean>
 }
 
 export default function CategoryManager({ categories, busy, onCreate, onUpdate }: Props) {
@@ -17,14 +17,12 @@ export default function CategoryManager({ categories, busy, onCreate, onUpdate }
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onCreate({ name, kind })
-    setName('')
+    if (await onCreate({ name, kind })) setName('')
   }
 
   async function rename(category: Category) {
     if (!editingName.trim()) return
-    await onUpdate(category.id, { name: editingName })
-    setEditingId(null)
+    if (await onUpdate(category.id, { name: editingName })) setEditingId(null)
   }
 
   return (

@@ -313,6 +313,112 @@ h3 {
   background: #fff1ef;
 }
 
+.toast-region {
+  position: fixed;
+  z-index: 1000;
+  top: 20px;
+  right: 20px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.feedback-toast {
+  padding: 14px;
+  border: 1px solid;
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 10px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(23 32 28 / 18%);
+  pointer-events: auto;
+  animation: toast-enter 160ms ease-out;
+}
+
+.feedback-toast.success {
+  border-color: #97c3ad;
+  background: #f1f8f4;
+}
+
+.feedback-toast.error {
+  border-color: #e0a6a1;
+  background: #fff1ef;
+}
+
+.feedback-toast.warning {
+  border-color: #dfbd79;
+  background: #fff8e8;
+}
+
+.toast-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--green);
+  font-weight: 900;
+}
+
+.feedback-toast.error .toast-icon {
+  background: var(--danger);
+}
+
+.feedback-toast.warning .toast-icon {
+  background: #9a6716;
+}
+
+.toast-copy {
+  min-width: 0;
+}
+
+.toast-copy strong {
+  display: block;
+  line-height: 1.35;
+}
+
+.toast-copy p {
+  margin: 4px 0 0;
+  color: #4f5e56;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: #58645e;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-close:hover,
+.toast-close:focus-visible {
+  color: var(--ink);
+  background: rgb(23 32 28 / 8%);
+  outline: none;
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .onboarding {
   max-width: 650px;
   padding: 42px;
@@ -1578,5 +1684,20 @@ input[readonly] {
   .fixed-history-row {
     grid-template-columns: 1fr auto;
     padding: 12px 16px;
+  }
+}
+
+@media (max-width: 760px) {
+  .toast-region {
+    top: 16px;
+    right: 16px;
+    left: 16px;
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedback-toast {
+    animation: none;
   }
 }

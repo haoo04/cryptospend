@@ -60,6 +60,52 @@ const emptyRecurringExpenses: RecurringExpenseList = {
   items: [],
 }
 
+export type FeedbackNotice = {
+  id: number
+  kind: 'success' | 'error' | 'warning'
+  title: string
+  message?: string
+}
+
+type ActionFeedback = {
+  success: string
+  failure: string
+}
+
+function reasonMessage(reason: unknown, fallback: string) {
+  return reason instanceof Error ? reason.message : fallback
+}
+
+export function FeedbackToast({ notice, onClose }: {
+  notice: FeedbackNotice | null
+  onClose: (id: number) => void
+}) {
+  useEffect(() => {
+    if (notice?.kind !== 'success') return
+    const timer = window.setTimeout(() => onClose(notice.id), 4000)
+    return () => window.clearTimeout(timer)
+  }, [notice, onClose])
+
+  if (!notice) return null
+  const icon = notice.kind === 'success' ? '✓' : notice.kind === 'warning' ? '!' : '×'
+  return (
+    <div className="toast-region">
+      <div
+        className={`feedback-toast ${notice.kind}`}
+        role={notice.kind === 'success' ? 'status' : 'alert'}
+        aria-atomic="true"
+      >
+        <span className="toast-icon" aria-hidden="true">{icon}</span>
+        <div className="toast-copy">
+          <strong>{notice.title}</strong>
+          {notice.message && <p>{notice.message}</p>}
+        </div>
+        <button type="button" className="toast-close" onClick={() => onClose(notice.id)} aria-label="Close notification">×</button>
+      </div>
+    </div>
+  )
+}
+
 function reportingMonth() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -86,6 +132,17 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState<FeedbackNotice | null>(null)
+  const noticeId = useRef(0)
+
+  const showNotice = useCallback((kind: FeedbackNotice['kind'], title: string, message?: string) => {
+    noticeId.current += 1
+    setNotice({ id: noticeId.current, kind, title, message })
+  }, [])
+
+  const closeNotice = useCallback((id: number) => {
+    setNotice((current) => current?.id === id ? null : current)
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -132,8 +189,6 @@ function App() {
       setJourneys(nextJourneys)
       setSnapshots(nextSnapshots)
       setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? null : null))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to load CryptoSpend')
     } finally {
       setLoading(false)
     }
@@ -151,7 +206,9 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refresh(), 0)
+    const timer = window.setTimeout(() => {
+      void refresh().catch((reason) => setError(reasonMessage(reason, 'Unable to load CryptoSpend')))
+    }, 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
 
@@ -160,57 +217,79 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [refreshBackupStatus])
 
-  async function initialize() {
+  async function runAction(
+    action: () => Promise<unknown>,
+    feedback: ActionFeedback,
+    refreshAfter: () => Promise<unknown> = refresh,
+    refreshOnConflict = false,
+  ): Promise<boolean> {
     setBusy(true)
     setError('')
     try {
-      await api.onboard()
-      await refresh()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Initialization failed')
+      try {
+        await action()
+      } catch (reason) {
+        showNotice('error', feedback.failure, reasonMessage(reason, 'The request could not be completed.'))
+        const status = reason instanceof Error ? (reason as Error & { status?: number }).status : undefined
+        if (refreshOnConflict && status === 409) {
+          try {
+            await refresh()
+          } catch (refreshReason) {
+            setError(reasonMessage(refreshReason, 'Unable to refresh the latest data'))
+          }
+        }
+        return false
+      }
+
+      try {
+        await refreshAfter()
+      } catch (reason) {
+        const detail = reasonMessage(reason, 'Unable to reload the latest data')
+        setError(detail)
+        showNotice(
+          'warning',
+          'Saved, but refresh failed',
+          `${feedback.success} ${detail} Use Refresh to load the latest data.`,
+        )
+        return true
+      }
+
+      showNotice('success', feedback.success)
+      return true
     } finally {
       setBusy(false)
     }
   }
 
-  async function runAction(action: () => Promise<unknown>) {
-    setBusy(true)
-    setError('')
-    try {
-      await action()
-      await refresh()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Action failed')
-    } finally {
-      setBusy(false)
-    }
+  function runRecurringAction(action: () => Promise<unknown>, feedback: ActionFeedback) {
+    return runAction(action, feedback, refresh, true)
   }
 
-  async function runRecurringAction(action: () => Promise<unknown>) {
-    setBusy(true)
-    setError('')
-    try {
-      await action()
-      await refresh()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Fixed expense action failed')
-      const status = reason instanceof Error ? (reason as Error & { status?: number }).status : undefined
-      if (status === 409) await refresh().catch(() => undefined)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function runReportAction(action: () => Promise<unknown>) {
-    setBusy(true)
-    setError('')
-    try {
-      await action()
+  function runReportAction(action: () => Promise<unknown>, feedback: ActionFeedback) {
+    return runAction(action, feedback, async () => {
       const [nextJourneys, nextSnapshots] = await Promise.all([api.journeys(), api.snapshots()])
       setJourneys(nextJourneys)
       setSnapshots(nextSnapshots)
+    })
+  }
+
+  async function initialize() {
+    await runAction(
+      () => api.onboard(),
+      { success: 'CryptoSpend initialized successfully.', failure: 'Unable to initialize CryptoSpend' },
+    )
+  }
+
+  async function runRefresh() {
+    setBusy(true)
+    setError('')
+    try {
+      await refresh()
+      showNotice('success', 'Data refreshed successfully.')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Report action failed')
+      const detail = reasonMessage(reason, 'Unable to refresh CryptoSpend')
+      setError(detail)
+      showNotice('error', 'Unable to refresh data', detail)
     } finally {
       setBusy(false)
     }
@@ -221,9 +300,18 @@ function App() {
     setError('')
     try {
       setLastBackup(await api.uploadGoogleDriveBackup())
-      await refreshBackupStatus()
+      const nextStatus = await refreshBackupStatus()
+      if (nextStatus) {
+        showNotice('success', 'Database backup uploaded successfully.')
+      } else {
+        showNotice(
+          'warning',
+          'Backup uploaded, but status refresh failed',
+          'The database backup was uploaded. Refresh Google Drive status to confirm the latest connection details.',
+        )
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Backup failed')
+      showNotice('error', 'Unable to upload database backup', reasonMessage(reason, 'Backup failed'))
     } finally {
       setBusy(false)
     }
@@ -264,13 +352,50 @@ function App() {
       try {
         await api.uploadReceipt(event.id, receipt)
       } catch (reason) {
-        const detail = reason instanceof Error ? reason.message : 'unknown upload error'
-        await refresh().catch(() => undefined)
-        throw new Error(
-          `Transaction ${event.id} saved, but receipt upload failed: ${detail}. Open the saved event to retry.`,
-          { cause: reason },
-        )
+        return { event, receiptError: reasonMessage(reason, 'Unknown upload error') }
       }
+    }
+    return { event, receiptError: null }
+  }
+
+  async function runManualEvent(payload: Record<string, unknown>, receipt?: File): Promise<boolean> {
+    setBusy(true)
+    setError('')
+    try {
+      let result: Awaited<ReturnType<typeof createManualEvent>>
+      try {
+        result = await createManualEvent(payload, receipt)
+      } catch (reason) {
+        showNotice('error', 'Unable to post transaction', reasonMessage(reason, 'Transaction failed'))
+        return false
+      }
+
+      let refreshError = ''
+      try {
+        await refresh()
+      } catch (reason) {
+        refreshError = reasonMessage(reason, 'Unable to reload the latest data')
+        setError(refreshError)
+      }
+
+      if (result.receiptError) {
+        showNotice(
+          'warning',
+          'Transaction saved, but receipt upload failed',
+          `Transaction ${result.event.id} was saved, but the receipt upload failed: ${result.receiptError}. Open the transaction to retry the receipt.${refreshError ? ` Data refresh also failed: ${refreshError}` : ''}`,
+        )
+      } else if (refreshError) {
+        showNotice(
+          'warning',
+          'Saved, but refresh failed',
+          `Transaction posted successfully. ${refreshError} Use Refresh to load the latest data.`,
+        )
+      } else {
+        showNotice('success', 'Transaction posted successfully.')
+      }
+      return true
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -291,6 +416,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <FeedbackToast notice={notice} onClose={closeNotice} />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">C</div>
@@ -333,7 +459,7 @@ function App() {
             <h1>{view === 'dashboard' ? 'Financial overview' : view === 'fixed-expenses' ? 'Fixed expenses' : view}</h1>
           </div>
           <div className="topbar-actions">
-            <button className="secondary" onClick={() => void refresh()} disabled={loading || busy}>
+            <button className="secondary" onClick={() => void runRefresh()} disabled={loading || busy}>
               Refresh
             </button>
             <button
@@ -368,12 +494,24 @@ function App() {
             busy={busy}
             selected={selected}
             onSelect={setSelected}
-            onChangeCategory={(event, categoryId) => runAction(() => api.updateEventCategory(event.id, categoryId))}
-            onUploadReceipt={(event, file) => runAction(() => api.uploadReceipt(event.id, file))}
-            onDeleteReceipt={(event) => runAction(() => api.deleteReceipt(event.id))}
+            onChangeCategory={(event, categoryId) => runAction(
+              () => api.updateEventCategory(event.id, categoryId),
+              { success: 'Transaction category updated successfully.', failure: 'Unable to update transaction category' },
+            )}
+            onUploadReceipt={(event, file) => runAction(
+              () => api.uploadReceipt(event.id, file),
+              { success: 'Receipt uploaded successfully.', failure: 'Unable to upload receipt' },
+            )}
+            onDeleteReceipt={(event) => runAction(
+              () => api.deleteReceipt(event.id),
+              { success: 'Receipt deleted successfully.', failure: 'Unable to delete receipt' },
+            )}
             onReverse={(event) => {
               const reason = window.prompt('Why are you reversing this posted event?')
-              if (reason) void runAction(() => api.reverseEvent(event.id, reason))
+              if (reason) void runAction(
+                () => api.reverseEvent(event.id, reason),
+                { success: 'Event reversed successfully.', failure: 'Unable to reverse event' },
+              )
             }}
           />
         )}
@@ -384,9 +522,15 @@ function App() {
             busy={busy}
             categories={categories}
             onOpenCategories={() => setView('categories')}
-            onSubmit={(payload, receipt) => runAction(() => createManualEvent(payload, receipt))}
-            onTrade={(payload) => runAction(() => api.createTrade(payload))}
-            onTransfer={(payload) => runAction(() => api.createTransfer(payload))}
+            onSubmit={runManualEvent}
+            onTrade={(payload) => runAction(
+              () => api.createTrade(payload),
+              { success: 'Trade posted successfully.', failure: 'Unable to post trade' },
+            )}
+            onTransfer={(payload) => runAction(
+              () => api.createTransfer(payload),
+              { success: 'Transfer posted successfully.', failure: 'Unable to post transfer' },
+            )}
           />
         )}
         {ready && view === 'fixed-expenses' && (
@@ -396,10 +540,22 @@ function App() {
             categories={categories}
             data={recurringExpenses}
             busy={busy}
-            onCreate={(payload) => runRecurringAction(() => api.createRecurringExpense(payload))}
-            onUpdate={(id, payload) => runRecurringAction(() => api.updateRecurringExpense(id, payload))}
-            onRecord={(id, payload) => runRecurringAction(() => api.recordRecurringExpense(id, payload))}
-            onSkip={(id, payload) => runRecurringAction(() => api.skipRecurringExpense(id, payload))}
+            onCreate={(payload) => runRecurringAction(
+              () => api.createRecurringExpense(payload),
+              { success: 'Fixed expense added successfully.', failure: 'Unable to add fixed expense' },
+            )}
+            onUpdate={(id, payload) => runRecurringAction(
+              () => api.updateRecurringExpense(id, payload),
+              { success: 'Fixed expense updated successfully.', failure: 'Unable to update fixed expense' },
+            )}
+            onRecord={(id, payload) => runRecurringAction(
+              () => api.recordRecurringExpense(id, payload),
+              { success: 'Fixed expense recorded successfully.', failure: 'Unable to record fixed expense' },
+            )}
+            onSkip={(id, payload) => runRecurringAction(
+              () => api.skipRecurringExpense(id, payload),
+              { success: 'Fixed expense occurrence skipped successfully.', failure: 'Unable to skip fixed expense occurrence' },
+            )}
             onLoadHistory={(id) => api.recurringExpenseOccurrences(id)}
             onOpenCategories={() => setView('categories')}
             onOpenEvent={(eventId) => {
@@ -414,7 +570,10 @@ function App() {
             feeReport={feeReport}
             assets={assets}
             busy={busy}
-            onRate={(payload) => runAction(() => api.createRate(payload))}
+            onRate={(payload) => runAction(
+              () => api.createRate(payload),
+              { success: 'Market rate saved successfully.', failure: 'Unable to save market rate' },
+            )}
           />
         )}
         {ready && view === 'cards' && (
@@ -425,12 +584,30 @@ function App() {
             cards={cards}
             costs={cardCosts}
             busy={busy}
-            onAuthorize={(payload) => runAction(() => api.authorizeCard(payload))}
-            onReverseAuthorization={(id) => runAction(() => api.reverseAuthorization(id))}
-            onSettle={(payload) => runAction(() => api.settleCard(payload))}
-            onRefund={(id, payload) => runAction(() => api.refundCard(id, payload))}
-            onReward={(id, payload) => runAction(() => api.createReward(id, payload))}
-            onCreditReward={(id, payload) => runAction(() => api.creditReward(id, payload))}
+            onAuthorize={(payload) => runAction(
+              () => api.authorizeCard(payload),
+              { success: 'Card authorization recorded successfully.', failure: 'Unable to record card authorization' },
+            )}
+            onReverseAuthorization={(id) => runAction(
+              () => api.reverseAuthorization(id),
+              { success: 'Card authorization reversed successfully.', failure: 'Unable to reverse card authorization' },
+            )}
+            onSettle={(payload) => runAction(
+              () => api.settleCard(payload),
+              { success: 'Card settlement posted successfully.', failure: 'Unable to post card settlement' },
+            )}
+            onRefund={(id, payload) => runAction(
+              () => api.refundCard(id, payload),
+              { success: 'Card refund posted successfully.', failure: 'Unable to post card refund' },
+            )}
+            onReward={(id, payload) => runAction(
+              () => api.createReward(id, payload),
+              { success: 'Pending reward saved successfully.', failure: 'Unable to save pending reward' },
+            )}
+            onCreditReward={(id, payload) => runAction(
+              () => api.creditReward(id, payload),
+              { success: 'Reward credited successfully.', failure: 'Unable to credit reward' },
+            )}
           />
         )}
         {ready && view === 'reports' && (
@@ -443,9 +620,18 @@ function App() {
             busy={busy}
             onLoadAnalytics={loadAnalytics}
             onLoadMonth={loadMonthly}
-            onSnapshot={(month) => runReportAction(() => api.createSnapshot(month))}
-            onCreateJourney={(payload) => runReportAction(() => api.createJourney(payload))}
-            onAllocate={(id, payload) => runReportAction(() => api.allocateJourneyEvent(id, payload))}
+            onSnapshot={(month) => runReportAction(
+              () => api.createSnapshot(month),
+              { success: 'Monthly snapshot saved successfully.', failure: 'Unable to save monthly snapshot' },
+            )}
+            onCreateJourney={(payload) => runReportAction(
+              () => api.createJourney(payload),
+              { success: 'Journey created successfully.', failure: 'Unable to create journey' },
+            )}
+            onAllocate={(id, payload) => runReportAction(
+              () => api.allocateJourneyEvent(id, payload),
+              { success: 'Journey allocation saved successfully.', failure: 'Unable to save journey allocation' },
+            )}
             onCompare={compareChannels}
           />
         )}
@@ -453,8 +639,14 @@ function App() {
           <CategoryManager
             categories={categories}
             busy={busy}
-            onCreate={(payload) => runAction(() => api.createCategory(payload))}
-            onUpdate={(id, payload) => runAction(() => api.updateCategory(id, payload))}
+            onCreate={(payload) => runAction(
+              () => api.createCategory(payload),
+              { success: 'Category created successfully.', failure: 'Unable to create category' },
+            )}
+            onUpdate={(id, payload) => runAction(
+              () => api.updateCategory(id, payload),
+              { success: 'Category updated successfully.', failure: 'Unable to update category' },
+            )}
           />
         )}
         {ready && view === 'accounts' && (
@@ -462,8 +654,14 @@ function App() {
             assets={assets}
             accounts={accounts}
             busy={busy}
-            onCreateAccount={(payload) => runAction(() => api.createAccount(payload))}
-            onCreateAsset={(payload) => runAction(() => api.createAsset(payload))}
+            onCreateAccount={(payload) => runAction(
+              () => api.createAccount(payload),
+              { success: 'Account created successfully.', failure: 'Unable to create account' },
+            )}
+            onCreateAsset={(payload) => runAction(
+              () => api.createAsset(payload),
+              { success: 'Asset created successfully.', failure: 'Unable to create asset' },
+            )}
           />
         )}
         {view === 'settings' && (
@@ -579,9 +777,9 @@ function Transactions({
   busy: boolean
   selected: TransactionEvent | null
   onSelect: (event: TransactionEvent | null) => void
-  onChangeCategory: (event: TransactionEvent, categoryId: string) => Promise<void>
-  onUploadReceipt: (event: TransactionEvent, file: File) => Promise<void>
-  onDeleteReceipt: (event: TransactionEvent) => Promise<void>
+  onChangeCategory: (event: TransactionEvent, categoryId: string) => Promise<boolean>
+  onUploadReceipt: (event: TransactionEvent, file: File) => Promise<boolean>
+  onDeleteReceipt: (event: TransactionEvent) => Promise<boolean>
   onReverse: (event: TransactionEvent) => void
 }) {
   const selectedCategoryOptions = selected?.category_kind
@@ -723,9 +921,9 @@ export function AddTransaction({
   busy: boolean
   categories?: Category[]
   onOpenCategories?: () => void
-  onSubmit: (payload: Record<string, unknown>, receipt?: File) => Promise<void>
-  onTrade: (payload: Record<string, unknown>) => Promise<void>
-  onTransfer: (payload: Record<string, unknown>) => Promise<void>
+  onSubmit: (payload: Record<string, unknown>, receipt?: File) => Promise<boolean>
+  onTrade: (payload: Record<string, unknown>) => Promise<boolean>
+  onTransfer: (payload: Record<string, unknown>) => Promise<boolean>
 }) {
   const [mode, setMode] = useState<'MANUAL' | 'TRADE' | 'TRANSFER'>('MANUAL')
   const [eventType, setEventType] = useState('SALARY')
@@ -800,8 +998,9 @@ export function AddTransaction({
       valuation_rate: rate || null,
       valuation_source: rate ? rateSource : null,
     }
-    if (receiptFile) await onSubmit(payload, receiptFile)
-    else await onSubmit(payload)
+    const succeeded = receiptFile ? await onSubmit(payload, receiptFile) : await onSubmit(payload)
+    if (!succeeded) return
+    setOccurredAt(localDateTimeValue())
     setDescription('')
     setQuantity('')
     setBookAmount('')
@@ -939,7 +1138,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
-  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+  onSubmit: (payload: Record<string, unknown>) => Promise<boolean>
 }) {
   const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
   const expenseAccounts = accounts.filter((account) => account.account_type === 'EXPENSE')
@@ -1083,7 +1282,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
     const value = (key: string) => String(data.get(key) ?? '')
     const grossBuy = addDecimal(buyQuantity, buyFee())
     const executionRate = divideDecimal(grossBuy, sellQuantity, tradeRateDecimals)
-    await onSubmit({
+    const succeeded = await onSubmit({
       occurred_at: new Date(occurredAt).toISOString(),
       account_id: value('account_id'),
       sell_asset_id: sellAssetId,
@@ -1105,6 +1304,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
         expense_account_id: value('fee_expense_account_id') || null,
       } : null,
     })
+    if (!succeeded) return
     form.reset()
     setOccurredAt(localDateTimeValue())
     setSellAssetId('')
@@ -1207,7 +1407,7 @@ function TransferForm({ assets, accounts, busy, onSubmit }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
-  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+  onSubmit: (payload: Record<string, unknown>) => Promise<boolean>
 }) {
   const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
   const expenseAccounts = accounts.filter((account) => account.account_type === 'EXPENSE')
@@ -1219,7 +1419,7 @@ function TransferForm({ assets, accounts, busy, onSubmit }: {
     const data = new FormData(form)
     const value = (key: string) => String(data.get(key) ?? '')
     const feeAmount = value('fee_amount')
-    await onSubmit({
+    const succeeded = await onSubmit({
       occurred_at: new Date(value('occurred_at')).toISOString(),
       source_account_id: value('source_account_id'),
       destination_account_id: value('destination_account_id'),
@@ -1239,7 +1439,10 @@ function TransferForm({ assets, accounts, busy, onSubmit }: {
         expense_account_id: value('fee_expense_account_id'),
       } : null,
     })
+    if (!succeeded) return
     form.reset()
+    const occurredAt = form.elements.namedItem('occurred_at')
+    if (occurredAt instanceof HTMLInputElement) occurredAt.value = localDateTimeValue()
   }
 
   return (
@@ -1278,12 +1481,13 @@ function Portfolio({ positions, feeReport, assets, busy, onRate }: {
   feeReport: FeeReport
   assets: Asset[]
   busy: boolean
-  onRate: (payload: Record<string, unknown>) => Promise<void>
+  onRate: (payload: Record<string, unknown>) => Promise<boolean>
 }) {
   async function submitRate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const data = new FormData(event.currentTarget)
-    await onRate({
+    const form = event.currentTarget
+    const data = new FormData(form)
+    const succeeded = await onRate({
       base_asset_id: String(data.get('base_asset_id')),
       quote_asset_id: String(data.get('quote_asset_id')),
       rate: String(data.get('rate')),
@@ -1292,6 +1496,10 @@ function Portfolio({ positions, feeReport, assets, busy, onRate }: {
       rate_type: 'MARKET',
       confidence: String(data.get('confidence')),
     })
+    if (!succeeded) return
+    form.reset()
+    const observedAt = form.elements.namedItem('observed_at')
+    if (observedAt instanceof HTMLInputElement) observedAt.value = localDateTimeValue()
   }
 
   return (
@@ -1348,8 +1556,8 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
     account_type: string
     channel_type: string
     provider: string | null
-  }) => Promise<void>
-  onCreateAsset: (payload: { symbol: string; name: string; decimals: number }) => Promise<void>
+  }) => Promise<boolean>
+  onCreateAsset: (payload: { symbol: string; name: string; decimals: number }) => Promise<boolean>
 }) {
   const [accountName, setAccountName] = useState('')
   const [accountType, setAccountType] = useState('ASSET')
@@ -1399,9 +1607,11 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
             account_type: accountType,
             channel_type: channelType,
             provider: provider || null,
-          }).then(() => {
-            setAccountName('')
-            setProvider('')
+          }).then((succeeded) => {
+            if (succeeded) {
+              setAccountName('')
+              setProvider('')
+            }
           })
         }}>
           <span className="eyebrow">NEW ACCOUNT</span><h2>Add account</h2>
@@ -1417,9 +1627,11 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
         </form>
         <form className="panel compact-form" onSubmit={(event) => {
           event.preventDefault()
-          void onCreateAsset({ symbol, name: assetName, decimals: Number.parseInt(decimals, 10) }).then(() => {
-            setSymbol('')
-            setAssetName('')
+          void onCreateAsset({ symbol, name: assetName, decimals: Number.parseInt(decimals, 10) }).then((succeeded) => {
+            if (succeeded) {
+              setSymbol('')
+              setAssetName('')
+            }
           })
         }}>
           <span className="eyebrow">NEW ASSET</span><h2>Add asset</h2>

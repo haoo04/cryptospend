@@ -29,9 +29,9 @@ type Props = {
   snapshots: ReportSnapshot[]
   busy: boolean
   onLoadMonth: (month: string) => Promise<void>
-  onSnapshot: (month: string) => Promise<void>
-  onCreateJourney: (payload: Record<string, unknown>) => Promise<void>
-  onAllocate: (id: string, payload: Record<string, unknown>) => Promise<void>
+  onSnapshot: (month: string) => Promise<boolean>
+  onCreateJourney: (payload: Record<string, unknown>) => Promise<boolean>
+  onAllocate: (id: string, payload: Record<string, unknown>) => Promise<boolean>
   onCompare: (payload: Record<string, unknown>) => Promise<ChannelComparison>
   onLoadAnalytics: (period: AnalyticsReport['period'], anchor: string) => Promise<AnalyticsReport>
 }
@@ -154,7 +154,7 @@ function MonthlyPanel({
   snapshots: ReportSnapshot[]
   busy: boolean
   onLoad: (month: string) => Promise<void>
-  onSnapshot: (month: string) => Promise<void>
+  onSnapshot: (month: string) => Promise<boolean>
 }) {
   return (
     <>
@@ -398,8 +398,8 @@ function JourneyPanel({
   events: TransactionEvent[]
   journeys: JourneyReport[]
   busy: boolean
-  onCreate: (payload: Record<string, unknown>) => Promise<void>
-  onAllocate: (id: string, payload: Record<string, unknown>) => Promise<void>
+  onCreate: (payload: Record<string, unknown>) => Promise<boolean>
+  onAllocate: (id: string, payload: Record<string, unknown>) => Promise<boolean>
 }) {
   const [name, setName] = useState('')
   const [journeyType, setJourneyType] = useState('WITHDRAWAL')
@@ -416,19 +416,19 @@ function JourneyPanel({
 
   async function create(event: FormEvent) {
     event.preventDefault()
-    await onCreate({
+    const succeeded = await onCreate({
       name,
       journey_type: journeyType,
       status: 'CONFIRMED',
       allocation_method: method,
       confidence: journeyConfidence,
     })
-    setName('')
+    if (succeeded) setName('')
   }
 
   async function allocate(event: FormEvent) {
     event.preventDefault()
-    await onAllocate(journeyId, {
+    const succeeded = await onAllocate(journeyId, {
       event_id: eventId,
       relation_type: role === 'INPUT' ? 'SOURCE' : role === 'OUTPUT' ? 'DESTINATION' : 'STEP',
       sequence: 0,
@@ -441,6 +441,7 @@ function JourneyPanel({
         confidence: allocationConfidence,
       }],
     })
+    if (!succeeded) return
     setQuantity('')
     setValue('')
   }

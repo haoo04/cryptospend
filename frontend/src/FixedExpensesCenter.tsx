@@ -56,10 +56,10 @@ type Props = {
   categories: Category[]
   data: RecurringExpenseList
   busy: boolean
-  onCreate: (payload: CreatePayload) => Promise<void>
-  onUpdate: (id: string, payload: UpdatePayload) => Promise<void>
-  onRecord: (id: string, payload: { due_on: string; occurred_at: string }) => Promise<void>
-  onSkip: (id: string, payload: { due_on: string; reason?: string | null }) => Promise<void>
+  onCreate: (payload: CreatePayload) => Promise<boolean>
+  onUpdate: (id: string, payload: UpdatePayload) => Promise<boolean>
+  onRecord: (id: string, payload: { due_on: string; occurred_at: string }) => Promise<boolean>
+  onSkip: (id: string, payload: { due_on: string; reason?: string | null }) => Promise<boolean>
   onLoadHistory: (id: string) => Promise<RecurringExpenseOccurrence[]>
   onOpenCategories?: () => void
   onOpenEvent?: (eventId: string) => void
@@ -225,6 +225,7 @@ export default function FixedExpensesCenter({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!configurationReady) return
+    let succeeded: boolean
     if (editingId) {
       const payload: UpdatePayload = {
         name: form.name,
@@ -238,9 +239,9 @@ export default function FixedExpensesCenter({
         payload.frequency = form.frequency
         payload.next_due_on = form.due_on
       }
-      await onUpdate(editingId, payload)
+      succeeded = await onUpdate(editingId, payload)
     } else {
-      await onCreate({
+      succeeded = await onCreate({
         name: form.name,
         amount_myr: form.amount_myr,
         frequency: form.frequency,
@@ -251,22 +252,24 @@ export default function FixedExpensesCenter({
         category_id: form.category_id,
       })
     }
-    startCreate()
+    if (succeeded) startCreate()
   }
 
   async function confirmAction() {
     if (!action) return
+    let succeeded: boolean
     if (action.kind === 'record') {
-      await onRecord(action.expense.id, {
+      succeeded = await onRecord(action.expense.id, {
         due_on: action.expense.next_due_on,
         occurred_at: new Date(occurredAt).toISOString(),
       })
     } else {
-      await onSkip(action.expense.id, {
+      succeeded = await onSkip(action.expense.id, {
         due_on: action.expense.next_due_on,
         reason: skipReason.trim() || null,
       })
     }
+    if (!succeeded) return
     setAction(null)
     setSkipReason('')
     if (selectedId === action.expense.id) void loadHistory(action.expense.id)

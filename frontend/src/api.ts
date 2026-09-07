@@ -384,17 +384,46 @@ export type GoogleDriveBackupResult = {
 
 const apiRoot = import.meta.env.VITE_API_URL ?? '/api'
 
+export function formatApiError(body: unknown, status: number) {
+  if (body && typeof body === 'object' && 'detail' in body) {
+    const detail = (body as { detail?: unknown }).detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    if (Array.isArray(detail)) {
+      const messages = detail.slice(0, 3).flatMap((item) => {
+        if (!item || typeof item !== 'object') return []
+        const issue = item as { loc?: unknown; msg?: unknown }
+        if (typeof issue.msg !== 'string') return []
+        const location = Array.isArray(issue.loc)
+          ? issue.loc
+            .filter((part) => part !== 'body' && (typeof part === 'string' || typeof part === 'number'))
+            .join('.')
+          : ''
+        return [`${location || 'Request'}: ${issue.msg}`]
+      })
+      if (messages.length) return `${messages.join('; ')}${detail.length > 3 ? '; …' : ''}`
+    }
+  }
+  return `Request failed (${status})`
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData
   const headers = new Headers(options?.headers)
   if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const response = await fetch(`${apiRoot}${path}`, {
-    ...options,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${apiRoot}${path}`, {
+      ...options,
+      headers,
+    })
+  } catch (reason) {
+    throw new Error('Unable to reach CryptoSpend. Check that the server is running and try again.', {
+      cause: reason,
+    })
+  }
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string } | null
-    const error = new Error(body?.detail ?? `Request failed (${response.status})`) as Error & { status?: number }
+    const body = await response.json().catch(() => null) as unknown
+    const error = new Error(formatApiError(body, response.status)) as Error & { status?: number }
     error.status = response.status
     throw error
   }

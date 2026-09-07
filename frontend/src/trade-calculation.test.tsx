@@ -20,7 +20,7 @@ const accounts: Account[] = [
 
 afterEach(cleanup)
 
-function renderTrade(onSubmit = vi.fn(async () => undefined)) {
+function renderTrade(onSubmit = vi.fn(async () => true)) {
   render(<TradeForm assets={assets} accounts={accounts} busy={false} onSubmit={onSubmit} />)
   return onSubmit
 }
@@ -54,6 +54,7 @@ describe('trade amount calculation', () => {
       execution_rate: '0.246428633035729687503928571429',
       gross_value_myr: '2800',
     })))
+    expect(screen.getByLabelText('Sell amount')).toHaveProperty('value', '')
   })
 
   it('recalculates the displayed MYR rate when the received amount is edited', () => {
@@ -79,5 +80,23 @@ describe('trade amount calculation', () => {
 
     expect(screen.getByLabelText('Receive amount')).toHaveProperty('value', '4241.5')
     expect(screen.getByLabelText('Gross transaction value (MYR)')).toHaveProperty('value', '4250')
+  })
+
+  it('keeps all trade inputs when posting fails', async () => {
+    const onSubmit = renderTrade(vi.fn(async () => false))
+    selectPair('myr', 'usdt')
+    fireEvent.change(screen.getByLabelText('Exchange account'), { target: { value: 'wallet' } })
+    fireEvent.change(screen.getByLabelText('Gain/loss account'), { target: { value: 'gain' } })
+    fireEvent.change(screen.getByLabelText('Sell amount'), { target: { value: '2800' } })
+    fireEvent.change(screen.getByLabelText('Exchange rate'), { target: { value: '4.05797' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post trade' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    expect(screen.getByLabelText('Sell asset')).toHaveProperty('value', 'myr')
+    expect(screen.getByLabelText('Buy asset')).toHaveProperty('value', 'usdt')
+    expect(screen.getByLabelText('Sell amount')).toHaveProperty('value', '2800')
+    expect(screen.getByLabelText('Exchange rate')).toHaveProperty('value', '4.05797')
+    expect(screen.getByLabelText('Receive amount')).toHaveProperty('value', '690.000172500043125011')
   })
 })

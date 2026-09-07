@@ -70,10 +70,10 @@ function renderCenter(overrides: Partial<ComponentProps<typeof FixedExpensesCent
       categories={categories}
       data={data()}
       busy={false}
-      onCreate={vi.fn(async () => undefined)}
-      onUpdate={vi.fn(async () => undefined)}
-      onRecord={vi.fn(async () => undefined)}
-      onSkip={vi.fn(async () => undefined)}
+      onCreate={vi.fn(async () => true)}
+      onUpdate={vi.fn(async () => true)}
+      onRecord={vi.fn(async () => true)}
+      onSkip={vi.fn(async () => true)}
       onLoadHistory={vi.fn(async () => [])}
       {...overrides}
     />,
@@ -82,7 +82,7 @@ function renderCenter(overrides: Partial<ComponentProps<typeof FixedExpensesCent
 
 describe('fixed expense management', () => {
   it('submits a string amount and all three schedule fields when creating', async () => {
-    const onCreate = vi.fn(async () => undefined)
+    const onCreate = vi.fn(async () => true)
     renderCenter({ onCreate })
 
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Cloud storage' } })
@@ -132,8 +132,8 @@ describe('fixed expense management', () => {
   })
 
   it('records and skips the current due date with an actual timestamp or reason', async () => {
-    const onRecord = vi.fn(async () => undefined)
-    const onSkip = vi.fn(async () => undefined)
+    const onRecord = vi.fn(async () => true)
+    const onSkip = vi.fn(async () => true)
     renderCenter({ data: data({ items: [item] }), onRecord, onSkip })
 
     fireEvent.click(screen.getByRole('button', { name: 'Record payment for 2026-10-01' }))
@@ -150,7 +150,7 @@ describe('fixed expense management', () => {
   })
 
   it('does not reset the schedule when editing ordinary fields', async () => {
-    const onUpdate = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async () => true)
     renderCenter({ data: data({ items: [item] }), onUpdate })
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
@@ -165,5 +165,18 @@ describe('fixed expense management', () => {
       expense_account_id: 'expense',
       category_id: 'subscription',
     }))
+  })
+
+  it('keeps the editor and its values open when an update fails', async () => {
+    const onUpdate = vi.fn(async () => false)
+    renderCenter({ data: data({ items: [item] }), onUpdate })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Netflix retry' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save fixed expense' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(screen.getByLabelText('Name')).toHaveProperty('value', 'Netflix retry')
+    expect(screen.getByRole('button', { name: 'Save fixed expense' })).toBeTruthy()
   })
 })
