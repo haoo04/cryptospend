@@ -15,6 +15,7 @@ import type {
   MonthlyReport,
   PortfolioPosition,
   ReportSnapshot,
+  RecurringExpenseList,
   Summary,
   TransactionEvent,
   AnalyticsReport,
@@ -22,10 +23,11 @@ import type {
 import CardCenter from './CardCenter'
 import CategoryManager from './CategoryManager'
 import { formatMyr, localDateTimeValue } from './format'
+import FixedExpensesCenter from './FixedExpensesCenter'
 import ReportsCenter from './ReportsCenter'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
+type View = 'dashboard' | 'transactions' | 'add' | 'fixed-expenses' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -43,6 +45,20 @@ const emptyBackupStatus: GoogleDriveBackupStatus = {
   message: null,
 }
 
+const emptyRecurringExpenses: RecurringExpenseList = {
+  as_of: new Date().toISOString().slice(0, 10),
+  timezone: 'Asia/Kuala_Lumpur',
+  summary: {
+    active_count: 0,
+    overdue_count: 0,
+    weekly_total_myr: '0',
+    monthly_total_myr: '0',
+    yearly_total_myr: '0',
+    annualized_myr: '0',
+  },
+  items: [],
+}
+
 function reportingMonth() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -53,6 +69,7 @@ function App() {
   const [assets, setAssets] = useState<Asset[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpenseList>(emptyRecurringExpenses)
   const [events, setEvents] = useState<TransactionEvent[]>([])
   const [summary, setSummary] = useState<Summary>(emptySummary)
   const [portfolio, setPortfolio] = useState<PortfolioPosition[]>([])
@@ -75,6 +92,7 @@ function App() {
         nextAssets,
         nextAccounts,
         nextCategories,
+        nextRecurringExpenses,
         nextEvents,
         nextSummary,
         nextPortfolio,
@@ -88,6 +106,7 @@ function App() {
         api.assets(),
         api.accounts(),
         api.categories(true),
+        api.recurringExpenses(true),
         api.events(),
         api.summary(),
         api.portfolio(),
@@ -101,6 +120,7 @@ function App() {
       setAssets(nextAssets)
       setAccounts(nextAccounts)
       setCategories(nextCategories)
+      setRecurringExpenses(nextRecurringExpenses)
       setEvents(nextEvents)
       setSummary(nextSummary)
       setPortfolio(nextPortfolio)
@@ -160,6 +180,21 @@ function App() {
       await refresh()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Action failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runRecurringAction(action: () => Promise<unknown>) {
+    setBusy(true)
+    setError('')
+    try {
+      await action()
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Fixed expense action failed')
+      const status = reason instanceof Error ? (reason as Error & { status?: number }).status : undefined
+      if (status === 409) await refresh().catch(() => undefined)
     } finally {
       setBusy(false)
     }
@@ -269,6 +304,7 @@ function App() {
               ['dashboard', 'Overview'],
               ['transactions', 'Transactions'],
               ['add', 'Add transaction'],
+              ['fixed-expenses', 'Fixed expenses'],
               ['portfolio', 'Portfolio'],
               ['cards', 'Card costs'],
               ['reports', 'Reports'],
@@ -293,7 +329,7 @@ function App() {
         <header className="topbar">
           <div>
             <span className="eyebrow">PERSONAL FINANCE / MYR</span>
-            <h1>{view === 'dashboard' ? 'Financial overview' : view}</h1>
+            <h1>{view === 'dashboard' ? 'Financial overview' : view === 'fixed-expenses' ? 'Fixed expenses' : view}</h1>
           </div>
           <div className="topbar-actions">
             <button className="secondary" onClick={() => void refresh()} disabled={loading || busy}>
@@ -350,6 +386,25 @@ function App() {
             onSubmit={(payload, receipt) => runAction(() => createManualEvent(payload, receipt))}
             onTrade={(payload) => runAction(() => api.createTrade(payload))}
             onTransfer={(payload) => runAction(() => api.createTransfer(payload))}
+          />
+        )}
+        {ready && view === 'fixed-expenses' && (
+          <FixedExpensesCenter
+            assets={assets}
+            accounts={accounts}
+            categories={categories}
+            data={recurringExpenses}
+            busy={busy}
+            onCreate={(payload) => runRecurringAction(() => api.createRecurringExpense(payload))}
+            onUpdate={(id, payload) => runRecurringAction(() => api.updateRecurringExpense(id, payload))}
+            onRecord={(id, payload) => runRecurringAction(() => api.recordRecurringExpense(id, payload))}
+            onSkip={(id, payload) => runRecurringAction(() => api.skipRecurringExpense(id, payload))}
+            onLoadHistory={(id) => api.recurringExpenseOccurrences(id)}
+            onOpenCategories={() => setView('categories')}
+            onOpenEvent={(eventId) => {
+              setSelected(events.find((event) => event.id === eventId) ?? null)
+              setView('transactions')
+            }}
           />
         )}
         {ready && view === 'portfolio' && (

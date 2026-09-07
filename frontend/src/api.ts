@@ -313,6 +313,60 @@ export type AnalyticsReport = {
   income_categories: AnalyticsCategory[]
 }
 
+export type RecurringFrequency = 'WEEKLY' | 'MONTHLY' | 'YEARLY'
+
+export type RecurringExpense = {
+  id: string
+  name: string
+  amount_myr: string
+  frequency: RecurringFrequency
+  anchor_on: string
+  next_due_on: string
+  due_status: 'PAUSED' | 'OVERDUE' | 'DUE_TODAY' | 'UPCOMING'
+  annualized_amount_myr: string
+  asset_id: string
+  funding_account_id: string
+  expense_account_id: string
+  category_id: string
+  active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type RecurringExpenseSummary = {
+  active_count: number
+  overdue_count: number
+  weekly_total_myr: string
+  monthly_total_myr: string
+  yearly_total_myr: string
+  annualized_myr: string
+}
+
+export type RecurringExpenseList = {
+  as_of: string
+  timezone: string
+  summary: RecurringExpenseSummary
+  items: RecurringExpense[]
+}
+
+export type RecurringExpenseOccurrence = {
+  id: string
+  recurring_expense_id: string
+  due_on: string
+  action: 'RECORDED' | 'SKIPPED'
+  scheduled_amount_myr: string
+  event_id: string | null
+  event_status: string | null
+  occurred_at: string | null
+  skip_reason: string | null
+  handled_at: string
+}
+
+export type RecurringExpenseAction = {
+  occurrence: RecurringExpenseOccurrence
+  recurring_expense: RecurringExpense
+}
+
 export type GoogleDriveBackupStatus = {
   configured: boolean
   supported: boolean
@@ -340,7 +394,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null
-    throw new Error(body?.detail ?? `Request failed (${response.status})`)
+    const error = new Error(body?.detail ?? `Request failed (${response.status})`) as Error & { status?: number }
+    error.status = response.status
+    throw error
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -351,6 +407,8 @@ export const api = {
   accounts: () => request<Account[]>('/accounts'),
   categories: (includeInactive = false) =>
     request<Category[]>(`/categories${includeInactive ? '?include_inactive=true' : ''}`),
+  recurringExpenses: (includeInactive = false) =>
+    request<RecurringExpenseList>(`/recurring-expenses${includeInactive ? '?include_inactive=true' : ''}`),
   events: () => request<TransactionEvent[]>('/events'),
   summary: () => request<Summary>('/reports/summary'),
   portfolio: (asOf?: string) =>
@@ -384,6 +442,44 @@ export const api = {
     request<Category>('/categories', { method: 'POST', body: JSON.stringify(payload) }),
   updateCategory: (id: string, payload: { name?: string; active?: boolean }) =>
     request<Category>(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  createRecurringExpense: (payload: {
+    name: string
+    amount_myr: string
+    frequency: RecurringFrequency
+    first_due_on: string
+    asset_id: string
+    funding_account_id: string
+    expense_account_id: string
+    category_id: string
+  }) => request<RecurringExpense>('/recurring-expenses', { method: 'POST', body: JSON.stringify(payload) }),
+  updateRecurringExpense: (
+    id: string,
+    payload: {
+      name?: string
+      amount_myr?: string
+      frequency?: RecurringFrequency
+      next_due_on?: string
+      asset_id?: string
+      funding_account_id?: string
+      expense_account_id?: string
+      category_id?: string
+      active?: boolean
+    },
+  ) => request<RecurringExpense>(`/recurring-expenses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  recordRecurringExpense: (id: string, payload: { due_on: string; occurred_at: string }) =>
+    request<RecurringExpenseAction>(`/recurring-expenses/${id}/record`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  skipRecurringExpense: (id: string, payload: { due_on: string; reason?: string | null }) =>
+    request<RecurringExpenseAction>(`/recurring-expenses/${id}/skip`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  recurringExpenseOccurrences: (id: string, limit = 50) =>
+    request<RecurringExpenseOccurrence[]>(
+      `/recurring-expenses/${id}/occurrences?limit=${encodeURIComponent(String(limit))}`,
+    ),
   createManualEvent: (payload: Record<string, unknown>) =>
     request<TransactionEvent>('/events/manual', { method: 'POST', body: JSON.stringify(payload) }),
   createTrade: (payload: Record<string, unknown>) =>

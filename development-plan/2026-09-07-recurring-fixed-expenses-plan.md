@@ -1,7 +1,7 @@
 # CryptoSpend 固定开销（周费、月费、年费）开发计划
 
 - 日期：2026-09-07
-- 状态：待实施
+- 状态：已完成
 - 前置依赖：先完成并提交 `2026-09-07-receipt-category-analytics-plan.md` 对应的分类、收据和分析功能；本计划从 Alembic revision `0006_event_receipts` 继续。
 
 ## 1. 目标
