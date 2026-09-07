@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, deferred, mapped_column, relationship
 
 from app.database import Base
 
@@ -65,6 +65,24 @@ class Account(Base):
     )
 
 
+class Category(Base):
+    __tablename__ = "categories"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(100))
+    normalized_name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now_text, onupdate=utc_now_text)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('INCOME','EXPENSE')", name="category_kind_valid"),
+        UniqueConstraint("kind", "normalized_name", name="uq_category_kind_name"),
+        Index("ix_categories_kind_active_name", "kind", "active", "name"),
+    )
+
+
 class TransactionEvent(Base):
     __tablename__ = "transaction_events"
 
@@ -75,6 +93,7 @@ class TransactionEvent(Base):
     time_precision: Mapped[str] = mapped_column(String(16), default="EXACT")
     description: Mapped[str] = mapped_column(String(500), default="")
     category: Mapped[str | None] = mapped_column(String(100))
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("categories.id"), index=True)
     source: Mapped[str] = mapped_column(String(40), default="MANUAL")
     external_id: Mapped[str | None] = mapped_column(String(200))
     transaction_value_myr: Mapped[int | None] = mapped_column(Integer)
@@ -88,12 +107,33 @@ class TransactionEvent(Base):
         back_populates="event", cascade="all, delete-orphan", lazy="selectin", foreign_keys="LedgerEntry.event_id"
     )
     fees: Mapped[list[FeeComponent]] = relationship(back_populates="event", lazy="selectin")
+    category_ref: Mapped[Category | None] = relationship()
+    receipt: Mapped[EventReceipt | None] = relationship(
+        back_populates="event", uselist=False, cascade="all, delete-orphan", single_parent=True
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('DRAFT','POSTED','REVERSED')", name="event_status_valid"),
         CheckConstraint("time_precision IN ('EXACT','DATE_ONLY')", name="event_time_precision_valid"),
         Index("ix_events_status_occurred", "status", "occurred_at"),
     )
+
+
+class EventReceipt(Base):
+    __tablename__ = "event_receipts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_events.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(32))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = deferred(mapped_column(LargeBinary))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now_text, onupdate=utc_now_text)
+
+    event: Mapped[TransactionEvent] = relationship(back_populates="receipt")
 
 
 class LedgerEntry(Base):

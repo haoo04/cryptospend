@@ -282,6 +282,7 @@ def create_settlement(session: Session, command: CardSettlementCreate) -> CardTr
                 event_type=EventType.CARD_SETTLEMENT,
                 occurred_at=command.settled_at,
                 description=command.description or f"Card purchase at {command.merchant_name}",
+                category_id=command.category_id,
                 transaction_value_myr=micros_to_myr(
                     merchant_value + sum(myr_to_micros(f.value_myr) for f in command.fees)
                 ),
@@ -469,6 +470,7 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
                 event_type=EventType.CARD_REFUND,
                 occurred_at=command.refunded_at,
                 description=command.description or f"Refund from {original.merchant_name}",
+                category_id=original.event.category_id if original.event else None,
                 transaction_value_myr=command.refund_value_myr,
                 entries=entries,
             ),
@@ -563,6 +565,7 @@ def credit_reward(session: Session, reward: Reward, command: RewardCreditCreate)
                 event_type=EventType.REWARD,
                 occurred_at=command.credited_at,
                 description=f"{reward.reward_type.title()} credited",
+                category_id=command.category_id,
                 transaction_value_myr=command.value_myr,
                 entries=[
                     {

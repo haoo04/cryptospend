@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type {
   Asset,
+  AnalyticsReport,
   ChannelComparison,
   JourneyReport,
   MonthlyReport,
@@ -32,11 +33,16 @@ type Props = {
   onCreateJourney: (payload: Record<string, unknown>) => Promise<void>
   onAllocate: (id: string, payload: Record<string, unknown>) => Promise<void>
   onCompare: (payload: Record<string, unknown>) => Promise<ChannelComparison>
+  onLoadAnalytics: (period: AnalyticsReport['period'], anchor: string) => Promise<AnalyticsReport>
 }
 
 function currentMonth() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
+
+function currentDate() {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export default function ReportsCenter({
@@ -51,17 +57,40 @@ export default function ReportsCenter({
   onCreateJourney,
   onAllocate,
   onCompare,
+  onLoadAnalytics,
 }: Props) {
-  const [tab, setTab] = useState<'MONTHLY' | 'JOURNEYS' | 'COMPARE'>('MONTHLY')
+  const [tab, setTab] = useState<'MONTHLY' | 'JOURNEYS' | 'COMPARE' | 'ANALYTICS'>('MONTHLY')
   const [month, setMonth] = useState(currentMonth())
   const [comparison, setComparison] = useState<ChannelComparison | null>(null)
+  const [analytics, setAnalytics] = useState<AnalyticsReport | null>(null)
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<AnalyticsReport['period']>('month')
+  const [analyticsAnchor, setAnalyticsAnchor] = useState(currentDate())
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsError, setAnalyticsError] = useState('')
+
+  useEffect(() => {
+    if (tab !== 'ANALYTICS') return
+    let active = true
+    void Promise.resolve()
+      .then(() => {
+        if (!active) return null
+        setAnalytics(null)
+        setAnalyticsError('')
+        setAnalyticsLoading(true)
+        return onLoadAnalytics(analyticsPeriod, analyticsAnchor)
+      })
+      .then((next) => { if (active && next) setAnalytics(next) })
+      .catch((reason) => { if (active) setAnalyticsError(reason instanceof Error ? reason.message : 'Unable to load analytics') })
+      .finally(() => { if (active) setAnalyticsLoading(false) })
+    return () => { active = false }
+  }, [analyticsAnchor, analyticsPeriod, onLoadAnalytics, tab])
 
   return (
     <div className="reports-center stack">
       <section className="panel report-tabs">
-        {(['MONTHLY', 'JOURNEYS', 'COMPARE'] as const).map((item) => (
+        {(['MONTHLY', 'ANALYTICS', 'JOURNEYS', 'COMPARE'] as const).map((item) => (
           <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>
-            {item === 'MONTHLY' ? 'Monthly & as-of' : item === 'JOURNEYS' ? 'Fund journeys' : 'Channel comparison'}
+            {item === 'MONTHLY' ? 'Monthly & as-of' : item === 'ANALYTICS' ? 'Analytics' : item === 'JOURNEYS' ? 'Fund journeys' : 'Channel comparison'}
           </button>
         ))}
       </section>
@@ -75,6 +104,18 @@ export default function ReportsCenter({
           busy={busy}
           onLoad={onLoadMonth}
           onSnapshot={onSnapshot}
+        />
+      )}
+      {tab === 'ANALYTICS' && (
+        <AnalyticsPanel
+          period={analyticsPeriod}
+          anchor={analyticsAnchor}
+          report={analytics}
+          loading={analyticsLoading}
+          error={analyticsError}
+          busy={busy}
+          onPeriodChange={setAnalyticsPeriod}
+          onAnchorChange={setAnalyticsAnchor}
         />
       )}
       {tab === 'JOURNEYS' && (
@@ -240,6 +281,109 @@ function MonthlyPanel({
 
 function ReportMetric({ label, value }: { label: string; value: string }) {
   return <div className="metric"><span>{label}</span><strong>{formatMyr(value)}</strong><small>Server-calculated</small></div>
+}
+
+function AnalyticsPanel({
+  period,
+  anchor,
+  report,
+  loading,
+  error,
+  busy,
+  onPeriodChange,
+  onAnchorChange,
+}: {
+  period: AnalyticsReport['period']
+  anchor: string
+  report: AnalyticsReport | null
+  loading: boolean
+  error: string
+  busy: boolean
+  onPeriodChange: (period: AnalyticsReport['period']) => void
+  onAnchorChange: (anchor: string) => void
+}) {
+  const hasValues = report && (report.timeline.some((item) => item.income_myr !== '0' || item.expense_myr !== '0') || report.expense_categories.length > 0 || report.income_categories.length > 0)
+  return (
+    <>
+      <section className="panel report-controls analytics-controls">
+        <div>
+          <span className="eyebrow">SERVER-AGGREGATED LEDGER</span>
+          <h2>Income and expense analytics</h2>
+          <p>Amounts and period boundaries follow the configured {report?.timezone ?? 'local'} timezone.</p>
+        </div>
+        <div className="mode-tabs analytics-periods" role="group" aria-label="Analytics period">
+          {(['day', 'week', 'month', 'year', 'all'] as const).map((item) => (
+            <button type="button" className={period === item ? 'active' : ''} key={item} onClick={() => onPeriodChange(item)} disabled={busy}>{item}</button>
+          ))}
+        </div>
+        {period !== 'all' && <label>Anchor date<input type="date" value={anchor} onChange={(event) => onAnchorChange(event.target.value)} disabled={busy} /></label>}
+      </section>
+
+      {loading && <section className="panel empty">Loading analytics…</section>}
+      {!loading && error && <section className="panel empty">{error}</section>}
+      {!loading && !error && report && (
+        <>
+          <section className="metric-grid">
+            <ReportMetric label="Income" value={report.summary.income_myr} />
+            <ReportMetric label="Expense" value={report.summary.expense_myr} />
+            <ReportMetric label="Net income" value={report.summary.net_income_myr} />
+          </section>
+          {!hasValues ? <section className="panel empty">No posted income or expense data in this period.</section> : (
+            <>
+              <section className="panel analytics-panel">
+                <div className="section-title"><div><span className="eyebrow">{report.bucket_unit.toUpperCase()} BUCKETS</span><h2>Income vs expense</h2></div><span className="count">{report.timeline.length}</span></div>
+                <div className="analytics-timeline">
+                  {report.timeline.map((item) => <AnalyticsTimelineRow key={item.bucket_start} label={item.label} income={item.income_myr} expense={item.expense_myr} />)}
+                </div>
+                <div className="analytics-legend"><span className="income-dot" /> Income <span className="expense-dot" /> Expense</div>
+              </section>
+              <section className="analytics-chart-grid">
+                <AnalyticsCategoryChart title="Expense by category" rows={report.expense_categories} kind="expense" />
+                <AnalyticsCategoryChart title="Income by category" rows={report.income_categories} kind="income" />
+              </section>
+            </>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
+function amountMagnitude(value: string) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? Math.abs(numeric) : 0
+}
+
+function AnalyticsTimelineRow({ label, income, expense }: { label: string; income: string; expense: string }) {
+  const scale = Math.max(amountMagnitude(income), amountMagnitude(expense), 1)
+  return (
+    <div className="analytics-timeline-row">
+      <strong className="analytics-timeline-label">{label}</strong>
+      <div className="analytics-bars">
+        <div className="analytics-bar-line"><span className="analytics-bar income" style={{ width: `${amountMagnitude(income) / scale * 100}%` }} /><span>{formatMyr(income)}</span></div>
+        <div className="analytics-bar-line"><span className={`analytics-bar expense ${expense.startsWith('-') ? 'negative' : ''}`} style={{ width: `${amountMagnitude(expense) / scale * 100}%` }} /><span>{formatMyr(expense)}</span></div>
+      </div>
+    </div>
+  )
+}
+
+function AnalyticsCategoryChart({ title, rows, kind }: { title: string; rows: AnalyticsReport['expense_categories']; kind: 'income' | 'expense' }) {
+  const scale = Math.max(...rows.map((row) => amountMagnitude(row.amount_myr)), 1)
+  return (
+    <section className="panel analytics-panel">
+      <div className="section-title"><div><span className="eyebrow">CATEGORY TOTALS</span><h2>{title}</h2></div><span className="count">{rows.length}</span></div>
+      <div className="analytics-category-list">
+        {rows.map((row) => (
+          <div className="analytics-category-row" key={`${row.category_id ?? 'uncategorized'}-${row.name}`}>
+            <strong className="analytics-category-label">{row.name}</strong>
+            <div className="analytics-category-track"><span className={`analytics-bar ${kind} ${row.amount_myr.startsWith('-') ? 'negative' : ''}`} style={{ width: `${amountMagnitude(row.amount_myr) / scale * 100}%` }} /></div>
+            <span className="analytics-category-amount">{formatMyr(row.amount_myr)}</span>
+          </div>
+        ))}
+        {!rows.length && <p className="empty">No {kind} categories in this period.</p>}
+      </div>
+    </section>
+  )
 }
 
 function JourneyPanel({

@@ -1,7 +1,7 @@
 # CryptoSpend 收据、分类与图表分析开发计划
 
 - 日期：2026-09-07
-- 状态：待实施
+- 状态：已完成
 
 ## 1. 目标
 
@@ -579,3 +579,10 @@ npm.cmd run build
 | `frontend/src/*.test.tsx` | 关键前端交互回归 |
 
 计划实施时应继续遵循“后端是财务计算权威、历史账本不直接修改、选择最小可行改动”的现有项目原则。
+
+## 16. 实施记录
+
+- 已完成 `0005_categories` 与 `0006_event_receipts` migration，新增分类管理、事件重分类、收据上传/替换/下载/删除及按周期分析接口。
+- 已完成前端 Categories 页面、交易分类/收据交互、卡结算与奖励分类选择，以及 Reports Analytics 页面。
+- 后端验证：24 个测试通过，1 个收据集成测试因当前虚拟环境尚未安装 `python-multipart` 跳过；依赖已加入 `backend/requirements.txt`。
+- 前端验证：5 个测试通过，ESLint 通过，TypeScript 与 Vite production build 通过（使用独立输出目录验证，原 `dist` 目录存在 Windows 文件锁）。

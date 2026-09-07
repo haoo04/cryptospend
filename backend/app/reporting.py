@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.cost_basis import event_effective_at, portfolio_positions
@@ -17,6 +17,7 @@ from app.models import (
     Asset,
     CardCostComponent,
     CardTransaction,
+    Category,
     FeeComponent,
     Journey,
     JourneyAllocation,
@@ -52,6 +53,243 @@ def month_bounds(session: Session, month: str) -> tuple[str, str, str]:
     else:
         local_end = datetime(year, month_number + 1, 1, tzinfo=zone)
     return utc_text(local_start), utc_text(local_end), timezone
+
+
+def analytics_period_bounds(
+    session: Session, period: str, anchor: str | None
+) -> tuple[datetime | None, datetime | None, str, str]:
+    setting = session.get(Setting, "default")
+    timezone = setting.timezone if setting else "Asia/Kuala_Lumpur"
+    try:
+        zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise DomainError(f"configured timezone is unavailable: {timezone}") from exc
+
+    if period == "all":
+        earliest = session.scalar(
+            select(func.min(TransactionEvent.occurred_at)).where(TransactionEvent.status != EventStatus.DRAFT.value)
+        )
+        latest = session.scalar(
+            select(func.max(TransactionEvent.occurred_at)).where(TransactionEvent.status != EventStatus.DRAFT.value)
+        )
+        if earliest is None or latest is None:
+            return None, None, timezone, "year"
+        first_local = datetime.fromisoformat(earliest).astimezone(zone)
+        last_local = datetime.fromisoformat(latest).astimezone(zone)
+        start = datetime(first_local.year, 1, 1, tzinfo=zone)
+        end = datetime(last_local.year + 1, 1, 1, tzinfo=zone)
+        return start, end, timezone, "year"
+
+    if not anchor:
+        raise DomainError("anchor is required unless period is all")
+    if len(anchor) != 10 or anchor[4] != "-" or anchor[7] != "-":
+        raise DomainError("anchor must use YYYY-MM-DD format")
+    try:
+        anchor_date = date.fromisoformat(anchor)
+    except ValueError as exc:
+        raise DomainError("anchor must use YYYY-MM-DD format") from exc
+
+    start_date = anchor_date
+    if period == "day":
+        end_date = start_date + timedelta(days=1)
+        unit = "hour"
+    elif period == "week":
+        start_date = anchor_date - timedelta(days=anchor_date.weekday())
+        end_date = start_date + timedelta(days=7)
+        unit = "day"
+    elif period == "month":
+        end_date = date(start_date.year + (start_date.month == 12), start_date.month % 12 + 1, 1)
+        start_date = date(start_date.year, start_date.month, 1)
+        unit = "day"
+    elif period == "year":
+        end_date = date(start_date.year + 1, 1, 1)
+        start_date = date(start_date.year, 1, 1)
+        unit = "month"
+    else:
+        raise DomainError("period must be day, week, month, year, or all")
+    return (
+        datetime.combine(start_date, time.min, tzinfo=zone),
+        datetime.combine(end_date, time.min, tzinfo=zone),
+        timezone,
+        unit,
+    )
+
+
+def advance_bucket(value: datetime, unit: str) -> datetime:
+    if unit == "hour":
+        return value + timedelta(hours=1)
+    if unit == "day":
+        return value + timedelta(days=1)
+    if unit == "month":
+        if value.month == 12:
+            return value.replace(year=value.year + 1, month=1)
+        return value.replace(month=value.month + 1)
+    return value.replace(year=value.year + 1)
+
+
+def bucket_key(value: datetime, unit: str) -> tuple[int, ...]:
+    if unit == "hour":
+        return value.year, value.month, value.day, value.hour
+    if unit == "day":
+        return value.year, value.month, value.day
+    if unit == "month":
+        return value.year, value.month
+    return (value.year,)
+
+
+def bucket_label(value: datetime, unit: str) -> str:
+    if unit == "hour":
+        return value.strftime("%H:%M")
+    if unit == "day":
+        return f"{value.day} {value.strftime('%b')}"
+    if unit == "month":
+        return value.strftime("%b %Y")
+    return value.strftime("%Y")
+
+
+def event_category(
+    session: Session, event: TransactionEvent, seen: set[str] | None = None
+) -> tuple[str | None, str | None, str | None]:
+    visited = seen or set()
+    if event.id in visited:
+        return None, None, None
+    visited.add(event.id)
+    category = event.category_ref or (session.get(Category, event.category_id) if event.category_id else None)
+    if category is not None:
+        return category.id, category.name, category.kind
+    if event.reverses_event_id:
+        original = session.get(TransactionEvent, event.reverses_event_id)
+        if original is not None:
+            return event_category(session, original, visited)
+    if event.category:
+        return None, event.category, None
+    return None, None, None
+
+
+def analytics_report(session: Session, period: str, anchor: str | None) -> dict:
+    start, end, timezone, unit = analytics_period_bounds(session, period, anchor)
+    if start is None or end is None:
+        return {
+            "period": period,
+            "anchor": anchor,
+            "timezone": timezone,
+            "period_start": None,
+            "period_end": None,
+            "bucket_unit": unit,
+            "summary": {"income_myr": "0", "expense_myr": "0", "net_income_myr": "0"},
+            "timeline": [],
+            "expense_categories": [],
+            "income_categories": [],
+        }
+
+    start_text = utc_text(start)
+    end_text = utc_text(end)
+    buckets: list[dict] = []
+    current = start
+    while current < end:
+        buckets.append(
+            {
+                "bucket_start": current.isoformat(),
+                "label": bucket_label(current, unit),
+                "income": 0,
+                "expense": 0,
+                "key": bucket_key(current, unit),
+            }
+        )
+        current = advance_bucket(current, unit)
+    bucket_by_key = {item["key"]: item for item in buckets}
+
+    category_totals: dict[tuple[str | None, str, str], int] = defaultdict(int)
+    statement = (
+        select(TransactionEvent)
+        .where(
+            TransactionEvent.status != EventStatus.DRAFT.value,
+            TransactionEvent.occurred_at >= start_text,
+            TransactionEvent.occurred_at < end_text,
+        )
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
+        .options(selectinload(TransactionEvent.category_ref))
+        .order_by(TransactionEvent.occurred_at, TransactionEvent.id)
+    )
+    income_total = 0
+    expense_total = 0
+    for event in session.scalars(statement):
+        local_time = datetime.fromisoformat(event.occurred_at).astimezone(start.tzinfo)
+        bucket = bucket_by_key.get(bucket_key(local_time, unit))
+        if bucket is None:
+            continue
+        category_id, category_name, category_kind = event_category(session, event)
+        for entry in event.entries:
+            account_type = entry.account.account_type
+            if account_type == AccountType.INCOME.value:
+                amount = (
+                    entry.book_amount_myr
+                    if entry.direction == EntryDirection.CREDIT.value
+                    else -entry.book_amount_myr
+                )
+                bucket["income"] += amount
+                income_total += amount
+                name = (
+                    category_name
+                    if category_kind in {None, AccountType.INCOME.value} and category_name
+                    else "Uncategorized"
+                )
+                category_totals[
+                    (category_id if category_kind == AccountType.INCOME.value else None, name, "INCOME")
+                ] += amount
+            elif account_type == AccountType.EXPENSE.value:
+                amount = (
+                    entry.book_amount_myr
+                    if entry.direction == EntryDirection.DEBIT.value
+                    else -entry.book_amount_myr
+                )
+                bucket["expense"] += amount
+                expense_total += amount
+                name = (
+                    category_name
+                    if category_kind in {None, AccountType.EXPENSE.value} and category_name
+                    else "Uncategorized"
+                )
+                category_totals[
+                    (category_id if category_kind == AccountType.EXPENSE.value else None, name, "EXPENSE")
+                ] += amount
+
+    def category_rows(kind: str) -> list[dict[str, str | None]]:
+        rows = [
+            {
+                "category_id": category_id,
+                "name": name,
+                "amount_myr": micros_to_myr(amount),
+            }
+            for (category_id, name, row_kind), amount in category_totals.items()
+            if row_kind == kind and amount != 0
+        ]
+        return sorted(rows, key=lambda row: (-myr_to_micros(row["amount_myr"] or "0"), row["name"] or ""))
+
+    return {
+        "period": period,
+        "anchor": anchor,
+        "timezone": timezone,
+        "period_start": start_text,
+        "period_end": end_text,
+        "bucket_unit": unit,
+        "summary": {
+            "income_myr": micros_to_myr(income_total),
+            "expense_myr": micros_to_myr(expense_total),
+            "net_income_myr": micros_to_myr(income_total - expense_total),
+        },
+        "timeline": [
+            {
+                "bucket_start": item["bucket_start"],
+                "label": item["label"],
+                "income_myr": micros_to_myr(item["income"]),
+                "expense_myr": micros_to_myr(item["expense"]),
+            }
+            for item in buckets
+        ],
+        "expense_categories": category_rows("EXPENSE"),
+        "income_categories": category_rows("INCOME"),
+    }
 
 
 def fee_report_data(session: Session, start: str | None = None, end: str | None = None) -> dict:

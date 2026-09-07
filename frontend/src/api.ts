@@ -53,18 +53,44 @@ export type FeeComponent = {
   confidence: string
 }
 
+export type Category = {
+  id: string
+  name: string
+  kind: 'INCOME' | 'EXPENSE'
+  active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ReceiptMetadata = {
+  id: string
+  original_filename: string
+  content_type: string
+  byte_size: number
+  created_at: string
+  updated_at: string
+}
+
 export type TransactionEvent = {
   id: string
   event_type: string
   status: string
   occurred_at: string
+  time_precision: string
   description: string
   category: string | null
+  category_id: string | null
+  category_kind: 'INCOME' | 'EXPENSE' | null
   source: string
+  external_id: string | null
+  transaction_value_myr: string | null
+  reference_value_myr: string | null
   reverses_event_id: string | null
   reversed_by_event_id: string | null
+  posted_at: string | null
   entries: LedgerEntry[]
   fees: FeeComponent[]
+  receipt: ReceiptMetadata | null
 }
 
 export type Summary = {
@@ -259,6 +285,34 @@ export type ChannelComparison = {
   note: string
 }
 
+export type AnalyticsCategory = {
+  category_id: string | null
+  name: string
+  amount_myr: string
+}
+
+export type AnalyticsReport = {
+  period: 'day' | 'week' | 'month' | 'year' | 'all'
+  anchor: string | null
+  timezone: string
+  period_start: string | null
+  period_end: string | null
+  bucket_unit: 'hour' | 'day' | 'month' | 'year'
+  summary: {
+    income_myr: string
+    expense_myr: string
+    net_income_myr: string
+  }
+  timeline: {
+    bucket_start: string
+    label: string
+    income_myr: string
+    expense_myr: string
+  }[]
+  expense_categories: AnalyticsCategory[]
+  income_categories: AnalyticsCategory[]
+}
+
 export type GoogleDriveBackupStatus = {
   configured: boolean
   supported: boolean
@@ -277,20 +331,26 @@ export type GoogleDriveBackupResult = {
 const apiRoot = import.meta.env.VITE_API_URL ?? '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData
+  const headers = new Headers(options?.headers)
+  if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const response = await fetch(`${apiRoot}${path}`, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers,
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null
     throw new Error(body?.detail ?? `Request failed (${response.status})`)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
 export const api = {
   assets: () => request<Asset[]>('/assets'),
   accounts: () => request<Account[]>('/accounts'),
+  categories: (includeInactive = false) =>
+    request<Category[]>(`/categories${includeInactive ? '?include_inactive=true' : ''}`),
   events: () => request<TransactionEvent[]>('/events'),
   summary: () => request<Summary>('/reports/summary'),
   portfolio: (asOf?: string) =>
@@ -299,6 +359,11 @@ export const api = {
   cards: () => request<CardRecord[]>('/cards'),
   cardCosts: () => request<CardCost[]>('/reports/card-costs'),
   monthly: (month: string) => request<MonthlyReport>(`/reports/monthly?month=${encodeURIComponent(month)}`),
+  analytics: (period: AnalyticsReport['period'], anchor?: string) => {
+    const query = new URLSearchParams({ period })
+    if (anchor) query.set('anchor', anchor)
+    return request<AnalyticsReport>(`/reports/analytics?${query.toString()}`)
+  },
   snapshots: () => request<ReportSnapshot[]>('/reports/monthly-snapshots'),
   journeys: () => request<JourneyReport[]>('/journeys'),
   googleDriveBackupStatus: () => request<GoogleDriveBackupStatus>('/backups/google-drive/status'),
@@ -315,6 +380,10 @@ export const api = {
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(payload) }),
   createAsset: (payload: { symbol: string; name: string; decimals: number }) =>
     request<Asset>('/assets', { method: 'POST', body: JSON.stringify(payload) }),
+  createCategory: (payload: { name: string; kind: Category['kind'] }) =>
+    request<Category>('/categories', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCategory: (id: string, payload: { name?: string; active?: boolean }) =>
+    request<Category>(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   createManualEvent: (payload: Record<string, unknown>) =>
     request<TransactionEvent>('/events/manual', { method: 'POST', body: JSON.stringify(payload) }),
   createTrade: (payload: Record<string, unknown>) =>
@@ -354,4 +423,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     }),
+  updateEventCategory: (id: string, category_id: string) =>
+    request<TransactionEvent>(`/events/${id}/category`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category_id }),
+    }),
+  uploadReceipt: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<ReceiptMetadata>(`/events/${id}/receipt`, { method: 'PUT', body: form })
+  },
+  receiptUrl: (id: string) => `${apiRoot}/events/${id}/receipt`,
+  deleteReceipt: (id: string) => request<void>(`/events/${id}/receipt`, { method: 'DELETE' }),
 }

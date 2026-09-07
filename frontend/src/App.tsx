@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './api'
 import type {
@@ -6,6 +6,7 @@ import type {
   Asset,
   CardCost,
   CardRecord,
+  Category,
   ChannelComparison,
   FeeReport,
   GoogleDriveBackupResult,
@@ -16,13 +17,15 @@ import type {
   ReportSnapshot,
   Summary,
   TransactionEvent,
+  AnalyticsReport,
 } from './api'
 import CardCenter from './CardCenter'
+import CategoryManager from './CategoryManager'
 import { formatMyr, localDateTimeValue } from './format'
 import ReportsCenter from './ReportsCenter'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'settings'
+type View = 'dashboard' | 'transactions' | 'add' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -49,6 +52,7 @@ function App() {
   const [view, setView] = useState<View>('dashboard')
   const [assets, setAssets] = useState<Asset[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
   const [events, setEvents] = useState<TransactionEvent[]>([])
   const [summary, setSummary] = useState<Summary>(emptySummary)
   const [portfolio, setPortfolio] = useState<PortfolioPosition[]>([])
@@ -70,6 +74,7 @@ function App() {
       const [
         nextAssets,
         nextAccounts,
+        nextCategories,
         nextEvents,
         nextSummary,
         nextPortfolio,
@@ -82,6 +87,7 @@ function App() {
       ] = await Promise.all([
         api.assets(),
         api.accounts(),
+        api.categories(true),
         api.events(),
         api.summary(),
         api.portfolio(),
@@ -94,6 +100,7 @@ function App() {
       ])
       setAssets(nextAssets)
       setAccounts(nextAccounts)
+      setCategories(nextCategories)
       setEvents(nextEvents)
       setSummary(nextSummary)
       setPortfolio(nextPortfolio)
@@ -202,6 +209,35 @@ function App() {
     }
   }
 
+  const loadAnalytics = useCallback(async (period: AnalyticsReport['period'], anchor: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      return await api.analytics(period, anchor)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to load analytics')
+      throw reason
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  async function createManualEvent(payload: Record<string, unknown>, receipt?: File) {
+    const event = await api.createManualEvent(payload)
+    if (receipt) {
+      try {
+        await api.uploadReceipt(event.id, receipt)
+      } catch (reason) {
+        const detail = reason instanceof Error ? reason.message : 'unknown upload error'
+        await refresh().catch(() => undefined)
+        throw new Error(
+          `Transaction ${event.id} saved, but receipt upload failed: ${detail}. Open the saved event to retry.`,
+          { cause: reason },
+        )
+      }
+    }
+  }
+
   async function compareChannels(payload: Record<string, unknown>): Promise<ChannelComparison> {
     setBusy(true)
     setError('')
@@ -236,6 +272,7 @@ function App() {
               ['portfolio', 'Portfolio'],
               ['cards', 'Card costs'],
               ['reports', 'Reports'],
+              ['categories', 'Categories'],
               ['accounts', 'Accounts'],
               ['settings', 'Settings'],
             ] as [View, string][]
@@ -290,8 +327,13 @@ function App() {
         {ready && view === 'transactions' && (
           <Transactions
             events={events}
+            categories={categories}
+            busy={busy}
             selected={selected}
             onSelect={setSelected}
+            onChangeCategory={(event, categoryId) => runAction(() => api.updateEventCategory(event.id, categoryId))}
+            onUploadReceipt={(event, file) => runAction(() => api.uploadReceipt(event.id, file))}
+            onDeleteReceipt={(event) => runAction(() => api.deleteReceipt(event.id))}
             onReverse={(event) => {
               const reason = window.prompt('Why are you reversing this posted event?')
               if (reason) void runAction(() => api.reverseEvent(event.id, reason))
@@ -303,7 +345,9 @@ function App() {
             assets={assets}
             accounts={accounts}
             busy={busy}
-            onSubmit={(payload) => runAction(() => api.createManualEvent(payload))}
+            categories={categories}
+            onOpenCategories={() => setView('categories')}
+            onSubmit={(payload, receipt) => runAction(() => createManualEvent(payload, receipt))}
             onTrade={(payload) => runAction(() => api.createTrade(payload))}
             onTransfer={(payload) => runAction(() => api.createTransfer(payload))}
           />
@@ -321,6 +365,7 @@ function App() {
           <CardCenter
             assets={assets}
             accounts={accounts}
+            categories={categories}
             cards={cards}
             costs={cardCosts}
             busy={busy}
@@ -340,11 +385,20 @@ function App() {
             journeys={journeys}
             snapshots={snapshots}
             busy={busy}
+            onLoadAnalytics={loadAnalytics}
             onLoadMonth={loadMonthly}
             onSnapshot={(month) => runReportAction(() => api.createSnapshot(month))}
             onCreateJourney={(payload) => runReportAction(() => api.createJourney(payload))}
             onAllocate={(id, payload) => runReportAction(() => api.allocateJourneyEvent(id, payload))}
             onCompare={compareChannels}
+          />
+        )}
+        {ready && view === 'categories' && (
+          <CategoryManager
+            categories={categories}
+            busy={busy}
+            onCreate={(payload) => runAction(() => api.createCategory(payload))}
+            onUpdate={(id, payload) => runAction(() => api.updateCategory(id, payload))}
           />
         )}
         {ready && view === 'accounts' && (
@@ -455,15 +509,29 @@ function Metric({ label, value, accent = false }: { label: string; value: string
 
 function Transactions({
   events,
+  categories,
+  busy,
   selected,
   onSelect,
+  onChangeCategory,
+  onUploadReceipt,
+  onDeleteReceipt,
   onReverse,
 }: {
   events: TransactionEvent[]
+  categories: Category[]
+  busy: boolean
   selected: TransactionEvent | null
   onSelect: (event: TransactionEvent | null) => void
+  onChangeCategory: (event: TransactionEvent, categoryId: string) => Promise<void>
+  onUploadReceipt: (event: TransactionEvent, file: File) => Promise<void>
+  onDeleteReceipt: (event: TransactionEvent) => Promise<void>
   onReverse: (event: TransactionEvent) => void
 }) {
+  const selectedCategoryOptions = selected?.category_kind
+    ? categories.filter((category) => category.kind === selected.category_kind && (category.active || category.id === selected.category_id))
+    : []
+
   return (
     <section className="transactions-layout">
       <div className="panel table-panel">
@@ -481,6 +549,7 @@ function Transactions({
                 <th>Date</th>
                 <th>Type</th>
                 <th>Description</th>
+                <th>Category</th>
                 <th>Status</th>
                 <th />
               </tr>
@@ -491,6 +560,7 @@ function Transactions({
                   <td>{new Date(event.occurred_at).toLocaleDateString()}</td>
                   <td>{event.event_type.replaceAll('_', ' ')}</td>
                   <td>{event.description || '—'}</td>
+                  <td>{event.category || 'Uncategorized'} {event.receipt && <span title="Receipt attached" aria-label="Receipt attached">▣</span>}</td>
                   <td>
                     <span className={`pill ${event.status.toLowerCase()}`}>{event.status}</span>
                   </td>
@@ -517,7 +587,21 @@ function Transactions({
             <div><dt>Status</dt><dd>{selected.status}</dd></div>
             <div><dt>Occurred</dt><dd>{new Date(selected.occurred_at).toLocaleString()}</dd></div>
             <div><dt>Source</dt><dd>{selected.source}</dd></div>
+            <div><dt>Category</dt><dd>{selected.category || 'Uncategorized'}</dd></div>
           </dl>
+          {selected.category_kind && (
+            <label className="detail-control">
+              Reclassify
+              <select
+                value={selected.category_id ?? ''}
+                onChange={(event) => { if (event.target.value) void onChangeCategory(selected, event.target.value) }}
+                disabled={busy || !selectedCategoryOptions.length}
+              >
+                <option value="">Select category</option>
+                {selectedCategoryOptions.map((category) => <option value={category.id} key={category.id}>{category.name}{category.active ? '' : ' (inactive)'}</option>)}
+              </select>
+            </label>
+          )}
           <h3>Double-entry lines</h3>
           <div className="entry-list">
             {selected.entries.map((entry) => (
@@ -543,6 +627,22 @@ function Transactions({
               </div>
             </>
           )}
+          <section className="receipt-detail">
+            <h3>Receipt</h3>
+            {selected.receipt ? (
+              <>
+                <img src={api.receiptUrl(selected.id)} alt={selected.receipt.original_filename} />
+                <div className="receipt-meta"><strong>{selected.receipt.original_filename}</strong><span>{Math.ceil(selected.receipt.byte_size / 1024)} KB · {selected.receipt.content_type}</span></div>
+                <div className="receipt-actions">
+                  <a href={api.receiptUrl(selected.id)} target="_blank" rel="noreferrer">Open original</a>
+                  <label className="text-button">Replace<input type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void onUploadReceipt(selected, file) }} /></label>
+                  <button className="text-button danger-text" disabled={busy} onClick={() => { if (window.confirm('Delete this receipt?')) void onDeleteReceipt(selected) }}>Delete</button>
+                </div>
+              </>
+            ) : (
+              <label className="receipt-upload">Upload receipt<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onUploadReceipt(selected, file) }} /></label>
+            )}
+          </section>
           {selected.status === 'POSTED' && !selected.reverses_event_id && (
             <button className="danger" onClick={() => onReverse(selected)}>Reverse event</button>
           )}
@@ -556,6 +656,8 @@ export function AddTransaction({
   assets,
   accounts,
   busy,
+  categories = [],
+  onOpenCategories,
   onSubmit,
   onTrade,
   onTransfer,
@@ -563,7 +665,9 @@ export function AddTransaction({
   assets: Asset[]
   accounts: Account[]
   busy: boolean
-  onSubmit: (payload: Record<string, unknown>) => Promise<void>
+  categories?: Category[]
+  onOpenCategories?: () => void
+  onSubmit: (payload: Record<string, unknown>, receipt?: File) => Promise<void>
   onTrade: (payload: Record<string, unknown>) => Promise<void>
   onTransfer: (payload: Record<string, unknown>) => Promise<void>
 }) {
@@ -571,7 +675,8 @@ export function AddTransaction({
   const [eventType, setEventType] = useState('SALARY')
   const [occurredAt, setOccurredAt] = useState(localDateTimeValue())
   const [description, setDescription] = useState('')
-  const [category, setCategory] = useState('')
+  const [categoryId, setCategoryId] = useState('')
+  const [receiptFile, setReceiptFile] = useState<File | null>(null)
   const [debit, setDebit] = useState('')
   const [credit, setCredit] = useState('')
   const [asset, setAsset] = useState('')
@@ -590,6 +695,20 @@ export function AddTransaction({
       credit: ['ASSET', 'INCOME', 'EQUITY', 'GAIN_LOSS', 'CLEARING'],
     }
   }, [eventType])
+  const categoryKind = useMemo<Category['kind'] | null>(() => {
+    if (eventType === 'SALARY' || eventType === 'INCOME') return 'INCOME'
+    if (eventType === 'EXPENSE') return 'EXPENSE'
+    if (eventType === 'ADJUSTMENT') {
+      const debitType = accounts.find((account) => account.id === debit)?.account_type
+      const creditType = accounts.find((account) => account.id === credit)?.account_type
+      if (debitType === 'INCOME' || creditType === 'INCOME') return 'INCOME'
+      if (debitType === 'EXPENSE' || creditType === 'EXPENSE') return 'EXPENSE'
+    }
+    return null
+  }, [accounts, credit, debit, eventType])
+  const categoryOptions = categories.filter((category) => category.active && category.kind === categoryKind)
+  const categoryRequired = ['SALARY', 'INCOME', 'EXPENSE'].includes(eventType)
+  const selectedCategoryId = categoryOptions.some((category) => category.id === categoryId) ? categoryId : ''
   const selectedAsset = assets.find((item) => item.id === asset)
   const isMyrAsset = selectedAsset?.symbol === 'MYR'
 
@@ -612,11 +731,11 @@ export function AddTransaction({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    await onSubmit({
+    const payload = {
       event_type: eventType,
       occurred_at: new Date(occurredAt).toISOString(),
       description,
-      category: category || null,
+      category_id: selectedCategoryId || null,
       debit_account_id: debit,
       credit_account_id: credit,
       asset_id: asset,
@@ -624,11 +743,15 @@ export function AddTransaction({
       book_amount_myr: bookAmount,
       valuation_rate: rate || null,
       valuation_source: rate ? rateSource : null,
-    })
+    }
+    if (receiptFile) await onSubmit(payload, receiptFile)
+    else await onSubmit(payload)
     setDescription('')
     setQuantity('')
     setBookAmount('')
     setRate('')
+    setCategoryId('')
+    setReceiptFile(null)
   }
 
   return (
@@ -704,14 +827,38 @@ export function AddTransaction({
           Rate source
           <input value={rateSource} onChange={(event) => setRateSource(event.target.value)} disabled={!rate} />
         </label>
-        <label>
-          Category
-          <input value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Food, Salary…" />
+        {categoryKind && (
+          <label>
+            Category
+            <select value={selectedCategoryId} onChange={(event) => setCategoryId(event.target.value)} required={categoryRequired && categories.length > 0}>
+              <option value="">Select category</option>
+              {categoryOptions.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+            </select>
+            {!categoryOptions.length && <small>No active categories. {onOpenCategories && <button type="button" className="text-button" onClick={onOpenCategories}>Manage categories</button>}</small>}
+          </label>
+        )}
+        <label className="wide receipt-picker">
+          Receipt image (optional)
+          <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setReceiptFile(event.target.files?.[0] ?? null)} />
+          {receiptFile && <small>{receiptFile.name} · {Math.ceil(receiptFile.size / 1024)} KB <button type="button" className="text-button" onClick={() => setReceiptFile(null)}>Remove</button></small>}
+          {receiptFile && <ReceiptPreview file={receiptFile} />}
         </label>
         <div className="wide form-actions"><button className="primary" disabled={busy}>{busy ? 'Posting…' : 'Post balanced event'}</button></div>
       </form>
     </section>
   )
+}
+
+function ReceiptPreview({ file }: { file: File }) {
+  const imageRef = useRef<HTMLImageElement>(null)
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file)
+    if (imageRef.current) imageRef.current.src = url
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
+  return <img ref={imageRef} className="receipt-preview" alt="Receipt preview" />
 }
 
 function EntryModeTabs({ mode, onChange }: {

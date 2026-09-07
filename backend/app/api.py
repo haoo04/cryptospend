@@ -1,10 +1,13 @@
 from datetime import datetime
+from pathlib import PurePosixPath
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, undefer
+from starlette.datastructures import UploadFile
 
 from app.cards import (
     available_account_balances,
@@ -20,7 +23,7 @@ from app.cards import (
 )
 from app.cost_basis import portfolio_positions
 from app.database import get_session
-from app.enums import AccountChannel, AccountType
+from app.enums import AccountChannel, AccountType, CategoryKind
 from app.google_drive import (
     GoogleDriveError,
     begin_authorization,
@@ -32,20 +35,25 @@ from app.ledger import (
     DomainError,
     account_balances,
     add_audit,
+    category_kind_for_account_types,
     create_draft,
     create_manual_event,
     get_event,
     post_event,
     report_totals,
     reverse_event,
+    utc_now_text,
     utc_text,
+    validate_category_binding,
 )
 from app.models import (
     Account,
     Asset,
     CardHold,
     CardTransaction,
+    Category,
     CostLot,
+    EventReceipt,
     Journey,
     LedgerEntry,
     RateSnapshot,
@@ -56,6 +64,7 @@ from app.models import (
 from app.money import micros_to_myr, myr_to_micros
 from app.reporting import (
     add_journey_event,
+    analytics_report,
     compare_channels,
     create_journey,
     create_monthly_snapshot,
@@ -76,8 +85,12 @@ from app.schemas import (
     CardAuthorizationCreate,
     CardRefundCreate,
     CardSettlementCreate,
+    CategoryCreate,
+    CategoryRead,
+    CategoryUpdate,
     ChannelComparisonCreate,
     CostLotRead,
+    EventCategoryUpdate,
     EventDraftCreate,
     EventRead,
     GoogleDriveBackupRead,
@@ -88,6 +101,7 @@ from app.schemas import (
     OnboardingCreate,
     PortfolioPositionRead,
     RateCreate,
+    ReceiptRead,
     ReverseCreate,
     RewardCreate,
     RewardCreditCreate,
@@ -95,13 +109,37 @@ from app.schemas import (
     SummaryRead,
     TradeCreate,
     TransferCreate,
+    normalize_category_name,
 )
 from app.trading import create_trade, create_transfer
 
 router = APIRouter(prefix="/api")
 
+MAX_RECEIPT_BYTES = 10 * 1024 * 1024
+RECEIPT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def receipt_read(receipt: EventReceipt) -> ReceiptRead:
+    return ReceiptRead(
+        id=receipt.id,
+        original_filename=receipt.original_filename,
+        content_type=receipt.content_type,
+        byte_size=receipt.byte_size,
+        created_at=receipt.created_at,
+        updated_at=receipt.updated_at,
+    )
+
 
 def event_read(event: TransactionEvent) -> EventRead:
+    category = event.category_ref
+    category_kind = category.kind if category else category_kind_for_account_types(
+        [entry.account.account_type for entry in event.entries]
+    )
     return EventRead(
         id=event.id,
         event_type=event.event_type,
@@ -109,7 +147,9 @@ def event_read(event: TransactionEvent) -> EventRead:
         occurred_at=event.occurred_at,
         time_precision=event.time_precision,
         description=event.description,
-        category=event.category,
+        category=category.name if category else event.category,
+        category_id=event.category_id,
+        category_kind=category_kind,
         source=event.source,
         external_id=event.external_id,
         transaction_value_myr=micros_to_myr(event.transaction_value_myr)
@@ -158,7 +198,24 @@ def event_read(event: TransactionEvent) -> EventRead:
             }
             for fee in event.fees
         ],
+        receipt=receipt_read(event.receipt) if event.receipt else None,
     )
+
+
+def receipt_filename(filename: str | None) -> str:
+    name = PurePosixPath((filename or "").replace("\\", "/")).name
+    name = "".join(character for character in name if character >= " " and character not in {'"', "\r", "\n"})
+    if not name:
+        raise DomainError("receipt filename is required", 415)
+    return name[:255]
+
+
+def receipt_signature_matches(content_type: str, data: bytes) -> bool:
+    if content_type == "image/jpeg":
+        return data.startswith(b"\xff\xd8\xff")
+    if content_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
 
 
 @router.get("/assets", response_model=list[AssetRead])
@@ -326,6 +383,59 @@ def get_settings(session: Session = Depends(get_session)) -> Setting:
     return setting
 
 
+@router.get("/categories", response_model=list[CategoryRead])
+def list_categories(
+    kind: CategoryKind | None = None,
+    include_inactive: bool = False,
+    session: Session = Depends(get_session),
+) -> list[Category]:
+    statement = select(Category).order_by(Category.kind, Category.name, Category.id)
+    if kind is not None:
+        statement = statement.where(Category.kind == kind.value)
+    if not include_inactive:
+        statement = statement.where(Category.active.is_(True))
+    return list(session.scalars(statement))
+
+
+@router.post("/categories", response_model=CategoryRead, status_code=201)
+def create_category(payload: CategoryCreate, session: Session = Depends(get_session)) -> Category:
+    category = Category(
+        name=payload.name,
+        normalized_name=normalize_category_name(payload.name),
+        kind=payload.kind.value,
+    )
+    session.add(category)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise DomainError("a category with this name already exists for this type", 409) from exc
+    return category
+
+
+@router.patch("/categories/{category_id}", response_model=CategoryRead)
+def update_category(category_id: str, payload: CategoryUpdate, session: Session = Depends(get_session)) -> Category:
+    category = session.get(Category, category_id)
+    if category is None:
+        raise DomainError("category not found", 404)
+    if payload.name is not None:
+        duplicate = session.scalar(
+            select(Category.id).where(
+                Category.kind == category.kind,
+                Category.normalized_name == normalize_category_name(payload.name),
+                Category.id != category.id,
+            )
+        )
+        if duplicate is not None:
+            raise DomainError("a category with this name already exists for this type", 409)
+        category.name = payload.name
+        category.normalized_name = normalize_category_name(payload.name)
+    if payload.active is not None:
+        category.active = payload.active
+    session.commit()
+    return category
+
+
 @router.get("/events", response_model=list[EventRead])
 def list_events(
     status: str | None = None,
@@ -336,6 +446,8 @@ def list_events(
         select(TransactionEvent)
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
+        .options(selectinload(TransactionEvent.category_ref))
+        .options(selectinload(TransactionEvent.receipt))
         .order_by(TransactionEvent.occurred_at.desc())
         .limit(limit)
     )
@@ -347,6 +459,90 @@ def list_events(
 @router.get("/events/{event_id}", response_model=EventRead)
 def event_detail(event_id: str, session: Session = Depends(get_session)) -> EventRead:
     return event_read(get_event(session, event_id))
+
+
+@router.put("/events/{event_id}/receipt", response_model=ReceiptRead)
+async def upload_event_receipt(
+    event_id: str, request: Request, session: Session = Depends(get_session)
+) -> ReceiptRead:
+    event = get_event(session, event_id)
+    form = await request.form()
+    uploaded = form.get("file")
+    if not isinstance(uploaded, UploadFile):
+        raise DomainError("multipart field 'file' is required", 422)
+
+    filename = receipt_filename(uploaded.filename)
+    content_type = (uploaded.content_type or "").lower()
+    expected_type = RECEIPT_TYPES.get(PurePosixPath(filename).suffix.lower())
+    if content_type not in set(RECEIPT_TYPES.values()) or expected_type != content_type:
+        raise DomainError("receipt must be a JPEG, PNG, or WebP image", 415)
+
+    chunks: list[bytes] = []
+    byte_size = 0
+    while True:
+        chunk = await uploaded.read(1024 * 1024)
+        if not chunk:
+            break
+        byte_size += len(chunk)
+        if byte_size > MAX_RECEIPT_BYTES:
+            raise DomainError("receipt exceeds the 10 MiB limit", 413)
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data:
+        raise DomainError("receipt file must not be empty")
+    if not receipt_signature_matches(content_type, data):
+        raise DomainError("receipt content does not match its declared image type", 415)
+
+    receipt = event.receipt
+    action = "RECEIPT_REPLACED" if receipt else "RECEIPT_ATTACHED"
+    if receipt is None:
+        receipt = EventReceipt(event_id=event.id)
+        session.add(receipt)
+    receipt.original_filename = filename
+    receipt.content_type = content_type
+    receipt.byte_size = byte_size
+    receipt.data = data
+    receipt.updated_at = utc_now_text()
+    session.flush()
+    add_audit(
+        session,
+        action,
+        event.id,
+        {"original_filename": filename, "content_type": content_type, "byte_size": byte_size},
+    )
+    session.commit()
+    return receipt_read(receipt)
+
+
+@router.get("/events/{event_id}/receipt")
+def download_event_receipt(event_id: str, session: Session = Depends(get_session)) -> Response:
+    receipt = session.scalar(
+        select(EventReceipt)
+        .options(undefer(EventReceipt.data))
+        .where(EventReceipt.event_id == event_id)
+    )
+    if receipt is None:
+        raise DomainError("receipt not found", 404)
+    return Response(
+        content=receipt.data,
+        media_type=receipt.content_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(receipt.original_filename, safe='')}",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.delete("/events/{event_id}/receipt", status_code=204)
+def delete_event_receipt(event_id: str, session: Session = Depends(get_session)) -> Response:
+    receipt = session.scalar(select(EventReceipt).where(EventReceipt.event_id == event_id))
+    if receipt is None:
+        raise DomainError("receipt not found", 404)
+    session.delete(receipt)
+    add_audit(session, "RECEIPT_REMOVED", event_id)
+    session.commit()
+    return Response(status_code=204)
 
 
 @router.post("/events/drafts", response_model=EventRead, status_code=201)
@@ -373,6 +569,34 @@ def post_draft(event_id: str, session: Session = Depends(get_session)) -> EventR
 @router.post("/events/{event_id}/reverse", response_model=EventRead, status_code=201)
 def reverse_posted(event_id: str, payload: ReverseCreate, session: Session = Depends(get_session)) -> EventRead:
     event = reverse_event(session, get_event(session, event_id), payload.reason)
+    session.commit()
+    return event_read(get_event(session, event.id))
+
+
+@router.patch("/events/{event_id}/category", response_model=EventRead)
+def update_event_category(
+    event_id: str, payload: EventCategoryUpdate, session: Session = Depends(get_session)
+) -> EventRead:
+    event = get_event(session, event_id)
+    account_types = [entry.account.account_type for entry in event.entries]
+    category = validate_category_binding(
+        session,
+        payload.category_id,
+        event.event_type,
+        account_types,
+    )
+    if category is None:
+        raise DomainError("category_id is required")
+    previous_id = event.category_id
+    event.category_id = category.id
+    event.category = category.name
+    event.category_ref = category
+    add_audit(
+        session,
+        "EVENT_CATEGORY_CHANGED",
+        event.id,
+        {"old_category_id": previous_id, "new_category_id": category.id},
+    )
     session.commit()
     return event_read(get_event(session, event.id))
 
@@ -685,6 +909,15 @@ def get_monthly_report(
     session: Session = Depends(get_session),
 ) -> dict:
     return monthly_report(session, month)
+
+
+@router.get("/reports/analytics")
+def get_analytics_report(
+    period: str,
+    anchor: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    return analytics_report(session, period, anchor)
 
 
 @router.post("/reports/monthly-snapshots", status_code=201)

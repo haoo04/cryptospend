@@ -21,18 +21,34 @@ def acquire(
     value_myr: str,
     occurred_at: str,
 ) -> dict:
+    category_id = None
+    if event_type in {"SALARY", "INCOME"}:
+        category_id = next(
+            category["id"]
+            for category in client.get("/api/categories").json()
+            if category["kind"] == "INCOME" and category["name"] == "Salary"
+        )
+    elif event_type == "EXPENSE":
+        category_id = next(
+            category["id"]
+            for category in client.get("/api/categories").json()
+            if category["kind"] == "EXPENSE" and category["name"] == "Food"
+        )
+    payload = {
+        "event_type": event_type,
+        "occurred_at": occurred_at,
+        "description": f"Acquire {quantity}",
+        "debit_account_id": account_id,
+        "credit_account_id": contra_account_id,
+        "asset_id": asset_id,
+        "quantity": quantity,
+        "book_amount_myr": value_myr,
+    }
+    if category_id:
+        payload["category_id"] = category_id
     response = client.post(
         "/api/events/manual",
-        json={
-            "event_type": event_type,
-            "occurred_at": occurred_at,
-            "description": f"Acquire {quantity}",
-            "debit_account_id": account_id,
-            "credit_account_id": contra_account_id,
-            "asset_id": asset_id,
-            "quantity": quantity,
-            "book_amount_myr": value_myr,
-        },
+        json=payload,
     )
     assert response.status_code == 201, response.text
     return response.json()

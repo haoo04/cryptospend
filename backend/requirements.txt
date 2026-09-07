@@ -4,6 +4,7 @@ sqlalchemy
 alembic
 pydantic
 pydantic-settings
+python-multipart
 python-dotenv
 tzdata
 google-api-python-client

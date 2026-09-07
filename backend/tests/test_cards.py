@@ -16,6 +16,11 @@ def setup_card_ledger(client: TestClient) -> tuple[dict[str, dict], dict[str, di
             "asset_id": assets["USDT"]["id"],
             "quantity": "100",
             "book_amount_myr": "425",
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "INCOME" and category["name"] == "Salary"
+            ),
             "valuation_rate": "4.25",
             "valuation_source": "receipt execution",
         },
@@ -53,6 +58,11 @@ def authorize(client: TestClient, assets: dict[str, dict], accounts: dict[str, d
 def settle(
     client: TestClient, assets: dict[str, dict], accounts: dict[str, dict], authorization_id: str
 ) -> dict:
+    expense_category_id = next(
+        category["id"]
+        for category in client.get("/api/categories").json()
+        if category["kind"] == "EXPENSE" and category["name"] == "Food"
+    )
     response = client.post(
         "/api/cards/settlements",
         json={
@@ -70,6 +80,7 @@ def settle(
             "merchant_value_myr": "100",
             "reference_fx_rate": "4.25",
             "expense_account_id": accounts["General Expense"]["id"],
+            "category_id": expense_category_id,
             "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
             "funding_legs": [
                 {
@@ -162,6 +173,11 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
         f"/api/rewards/{pending.json()['id']}/credit",
         json={
             "income_account_id": accounts["Other Income"]["id"],
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "INCOME" and category["name"] == "Cashback"
+            ),
             "value_myr": "4.25",
             "valuation_rate": "4.25",
             "valuation_source": "credited price",
@@ -177,6 +193,11 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
             "external_id": "refund-1",
             "refund_value_myr": "40",
             "expense_account_id": accounts["General Expense"]["id"],
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "EXPENSE" and category["name"] == "Food"
+            ),
             "refund_legs": [
                 {
                     "account_id": accounts["Crypto Wallet"]["id"],
@@ -229,6 +250,11 @@ def test_separate_fee_is_added_once_to_economic_cost(client: TestClient) -> None
             "billing_amount": "100",
             "merchant_value_myr": "100",
             "expense_account_id": accounts["General Expense"]["id"],
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "EXPENSE" and category["name"] == "Food"
+            ),
             "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
             "funding_legs": [
                 {

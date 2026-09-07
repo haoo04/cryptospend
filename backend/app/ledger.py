@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.enums import AccountType, EntryDirection, EventStatus, EventType
-from app.models import Account, Asset, AuditLog, FeeComponent, LedgerEntry, TransactionEvent, utc_now_text
+from app.models import Account, Asset, AuditLog, Category, FeeComponent, LedgerEntry, TransactionEvent, utc_now_text
 from app.money import canonical_decimal, micros_to_myr, myr_to_micros, parse_decimal
 from app.schemas import EventDraftCreate, ManualEventCreate
 
@@ -29,21 +29,73 @@ def add_audit(session: Session, action: str, event_id: str | None = None, detail
     session.add(AuditLog(event_id=event_id, action=action, details=json.dumps(details or {}, sort_keys=True)))
 
 
+REQUIRED_CATEGORY_EVENT_TYPES = {
+    EventType.SALARY.value,
+    EventType.INCOME.value,
+    EventType.EXPENSE.value,
+    EventType.CARD_SETTLEMENT.value,
+    EventType.REWARD.value,
+}
+
+
+def category_kind_for_account_types(account_types: list[str]) -> str | None:
+    kinds = {
+        account_type
+        for account_type in account_types
+        if account_type in {AccountType.INCOME.value, AccountType.EXPENSE.value}
+    }
+    return next(iter(kinds)) if len(kinds) == 1 else None
+
+
+def validate_category_binding(
+    session: Session,
+    category_id: str | None,
+    event_type: str,
+    account_types: list[str],
+    *,
+    required: bool = False,
+    allow_inactive: bool = False,
+) -> Category | None:
+    category = session.get(Category, category_id) if category_id else None
+    if category_id and category is None:
+        raise DomainError("category not found")
+    expected_kind = category_kind_for_account_types(account_types)
+    if category is not None:
+        if not category.active and not allow_inactive:
+            raise DomainError("category must be active for a new event")
+        if expected_kind is None:
+            raise DomainError("category requires exactly one INCOME or EXPENSE account")
+        if category.kind != expected_kind:
+            raise DomainError(f"category kind must be {expected_kind}")
+    if required and category is None:
+        raise DomainError(f"category_id is required for {event_type}")
+    return category
+
+
 def create_draft(session: Session, command: EventDraftCreate) -> TransactionEvent:
     account_ids = {entry.account_id for entry in command.entries}
     asset_ids = {entry.asset_id for entry in command.entries}
-    if len(session.scalars(select(Account).where(Account.id.in_(account_ids))).all()) != len(account_ids):
+    accounts = list(session.scalars(select(Account).where(Account.id.in_(account_ids))).all())
+    if len(accounts) != len(account_ids):
         raise DomainError("one or more accounts do not exist")
     if len(session.scalars(select(Asset).where(Asset.id.in_(asset_ids))).all()) != len(asset_ids):
         raise DomainError("one or more assets do not exist")
 
+    category = validate_category_binding(
+        session,
+        command.category_id,
+        command.event_type.value,
+        [account.account_type for account in accounts if account.id in account_ids],
+        allow_inactive=command.event_type == EventType.REVERSAL,
+    )
     event = TransactionEvent(
         event_type=command.event_type.value,
         status=EventStatus.DRAFT.value,
         occurred_at=utc_text(command.occurred_at),
         time_precision=command.time_precision,
         description=command.description.strip(),
-        category=command.category.strip() if command.category else None,
+        category=category.name if category else None,
+        category_id=category.id if category else None,
         source=command.source,
         external_id=command.external_id,
         transaction_value_myr=myr_to_micros(command.transaction_value_myr)
@@ -89,6 +141,15 @@ def post_event(session: Session, event: TransactionEvent) -> TransactionEvent:
     for entry in event.entries:
         if parse_decimal(entry.quantity) < 0:
             raise DomainError("entry quantity cannot be negative")
+    account_types = [session.get(Account, entry.account_id).account_type for entry in event.entries]
+    validate_category_binding(
+        session,
+        event.category_id,
+        event.event_type,
+        account_types,
+        required=event.event_type in REQUIRED_CATEGORY_EVENT_TYPES,
+        allow_inactive=event.event_type == EventType.REVERSAL,
+    )
     event.status = EventStatus.POSTED.value
     event.posted_at = utc_now_text()
     from app.cost_basis import create_event_acquisition_lots
@@ -104,7 +165,7 @@ def create_manual_event(session: Session, command: ManualEventCreate) -> Transac
         event_type=command.event_type,
         occurred_at=command.occurred_at,
         description=command.description,
-        category=command.category,
+        category_id=command.category_id,
         transaction_value_myr=command.book_amount_myr,
         entries=[
             {
@@ -137,6 +198,8 @@ def get_event(session: Session, event_id: str) -> TransactionEvent:
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
         .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
         .options(selectinload(TransactionEvent.fees).selectinload(FeeComponent.asset))
+        .options(selectinload(TransactionEvent.category_ref))
+        .options(selectinload(TransactionEvent.receipt))
     )
     if event is None:
         raise DomainError("event not found", 404)
@@ -154,6 +217,7 @@ def reverse_event(session: Session, original: TransactionEvent, reason: str) -> 
         occurred_at=datetime.now(UTC),
         description=f"Reversal: {reason}",
         source="SYSTEM",
+        category_id=original.category_id,
         transaction_value_myr=micros_to_myr(original.transaction_value_myr)
         if original.transaction_value_myr is not None
         else None,

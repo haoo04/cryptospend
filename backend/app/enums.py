@@ -42,6 +42,11 @@ class EventType(StrEnum):
     REVERSAL = "REVERSAL"
 
 
+class CategoryKind(StrEnum):
+    INCOME = "INCOME"
+    EXPENSE = "EXPENSE"
+
+
 class EntryDirection(StrEnum):
     DEBIT = "DEBIT"
     CREDIT = "CREDIT"

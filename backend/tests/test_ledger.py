@@ -43,6 +43,10 @@ def test_unbalanced_draft_cannot_be_posted(client: TestClient) -> None:
 
 def test_salary_transfer_expense_and_reversal_reports(client: TestClient) -> None:
     assets, accounts = onboard(client)
+    categories = {
+        (category["kind"], category["name"]): category
+        for category in client.get("/api/categories").json()
+    }
     salary = client.post(
         "/api/events/manual",
         json={
@@ -54,6 +58,7 @@ def test_salary_transfer_expense_and_reversal_reports(client: TestClient) -> Non
             "asset_id": assets["USDT"]["id"],
             "quantity": "1000.00000000",
             "book_amount_myr": "4250",
+            "category_id": categories[("INCOME", "Salary")]["id"],
             "valuation_rate": "4.25",
             "valuation_source": "manual receipt price",
         },
@@ -84,7 +89,7 @@ def test_salary_transfer_expense_and_reversal_reports(client: TestClient) -> Non
             "event_type": "EXPENSE",
             "occurred_at": "2026-08-03T12:00:00+08:00",
             "description": "Lunch",
-            "category": "Food",
+            "category_id": categories[("EXPENSE", "Food")]["id"],
             "debit_account_id": accounts["General Expense"]["id"],
             "credit_account_id": accounts["Cash"]["id"],
             "asset_id": assets["MYR"]["id"],

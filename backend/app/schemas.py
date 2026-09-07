@@ -1,9 +1,68 @@
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.enums import AccountChannel, AccountType, EntryDirection, EventType, FeeTreatment
+from app.enums import AccountChannel, AccountType, CategoryKind, EntryDirection, EventType, FeeTreatment
 from app.money import canonical_decimal, parse_decimal
+
+
+def clean_category_name(value: str) -> str:
+    cleaned = " ".join(value.strip().split())
+    if not cleaned:
+        raise ValueError("category name must not be blank")
+    return cleaned
+
+
+def normalize_category_name(value: str) -> str:
+    return clean_category_name(value).casefold()
+
+
+class CategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    kind: CategoryKind
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return clean_category_name(value)
+
+
+class CategoryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    active: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        return clean_category_name(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "CategoryUpdate":
+        if self.name is None and self.active is None:
+            raise ValueError("at least one category field must be provided")
+        return self
+
+
+class CategoryRead(BaseModel):
+    id: str
+    name: str
+    kind: str
+    active: bool
+    created_at: str
+    updated_at: str
+
+
+class EventCategoryUpdate(BaseModel):
+    category_id: str = Field(min_length=1)
+
+
+class ReceiptRead(BaseModel):
+    id: str
+    original_filename: str
+    content_type: str
+    byte_size: int
+    created_at: str
+    updated_at: str
 
 
 class AssetCreate(BaseModel):
@@ -59,7 +118,7 @@ class EventDraftCreate(BaseModel):
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     time_precision: str = Field(default="EXACT", pattern="^(EXACT|DATE_ONLY)$")
     description: str = Field(default="", max_length=500)
-    category: str | None = Field(default=None, max_length=100)
+    category_id: str | None = None
     source: str = Field(default="MANUAL", max_length=40)
     external_id: str | None = Field(default=None, max_length=200)
     transaction_value_myr: str | None = None
@@ -76,7 +135,7 @@ class ManualEventCreate(BaseModel):
     event_type: EventType
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     description: str = Field(default="", max_length=500)
-    category: str | None = Field(default=None, max_length=100)
+    category_id: str | None = None
     debit_account_id: str
     credit_account_id: str
     asset_id: str
@@ -151,6 +210,8 @@ class EventRead(BaseModel):
     time_precision: str
     description: str
     category: str | None
+    category_id: str | None
+    category_kind: str | None
     source: str
     external_id: str | None
     transaction_value_myr: str | None
@@ -160,6 +221,7 @@ class EventRead(BaseModel):
     posted_at: str | None
     entries: list[EntryRead]
     fees: list["FeeRead"] = Field(default_factory=list)
+    receipt: ReceiptRead | None = None
 
 
 class SettingsRead(BaseModel):
@@ -382,6 +444,7 @@ class CardSettlementCreate(BaseModel):
     merchant_value_myr: str
     reference_fx_rate: str | None = None
     expense_account_id: str
+    category_id: str | None = None
     gain_loss_account_id: str
     funding_legs: list[CardFundingLegCreate] = Field(min_length=1)
     fees: list[FeeCreate] = Field(default_factory=list)
@@ -453,6 +516,7 @@ class RewardCreate(BaseModel):
 
 class RewardCreditCreate(BaseModel):
     income_account_id: str
+    category_id: str | None = None
     value_myr: str
     valuation_rate: str
     valuation_source: str = Field(min_length=1, max_length=120)

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Account, Asset, CardCost, CardRecord } from './api'
+import type { Account, Asset, CardCost, CardRecord, Category } from './api'
 import { formatMyr, localDateTimeValue } from './format'
 
 type CardMode = 'OVERVIEW' | 'AUTHORIZE' | 'SETTLE' | 'REFUND' | 'REWARD'
@@ -8,6 +8,7 @@ type CardMode = 'OVERVIEW' | 'AUTHORIZE' | 'SETTLE' | 'REFUND' | 'REWARD'
 type Props = {
   assets: Asset[]
   accounts: Account[]
+  categories: Category[]
   cards: CardRecord[]
   costs: CardCost[]
   busy: boolean
@@ -31,6 +32,12 @@ function assetOptions(assets: Asset[]) {
 function accountOptions(accounts: Account[], type: string) {
   return accounts.filter((account) => account.account_type === type).map((account) => (
     <option value={account.id} key={account.id}>{account.name}</option>
+  ))
+}
+
+function categoryOptions(categories: Category[], kind: Category['kind']) {
+  return categories.filter((category) => category.active && category.kind === kind).map((category) => (
+    <option value={category.id} key={category.id}>{category.name}</option>
   ))
 }
 
@@ -140,7 +147,7 @@ function AuthorizationForm({ assets, accounts, busy, onAuthorize }: Props) {
   )
 }
 
-function SettlementForm({ assets, accounts, cards, busy, onSettle }: Props) {
+function SettlementForm({ assets, accounts, categories, cards, busy, onSettle }: Props) {
   const authorizations = cards.filter((card) => ['AUTHORIZED', 'PARTIALLY_SETTLED'].includes(card.status))
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -151,7 +158,7 @@ function SettlementForm({ assets, accounts, cards, busy, onSettle }: Props) {
       authorization_id: value('authorization_id') || null, provider: value('provider'), provider_account_id: value('provider_account_id'), external_id: value('external_id') || null,
       card_account_id: value('card_account_id'), merchant_name: value('merchant_name'), merchant_country: value('merchant_country') || null,
       merchant_asset_id: value('merchant_asset_id'), merchant_amount: value('merchant_amount'), billing_asset_id: value('billing_asset_id'), billing_amount: value('billing_amount'),
-      merchant_value_myr: value('merchant_value_myr'), reference_fx_rate: value('reference_fx_rate') || null, expense_account_id: value('expense_account_id'),
+      merchant_value_myr: value('merchant_value_myr'), reference_fx_rate: value('reference_fx_rate') || null, expense_account_id: value('expense_account_id'), category_id: value('category_id'),
       gain_loss_account_id: value('gain_loss_account_id'), settled_at: new Date(value('settled_at')).toISOString(), final_capture: value('final_capture') === 'on',
       funding_legs: [{ account_id: value('funding_account_id'), asset_id: value('funding_asset_id'), quantity: value('funding_quantity'), transaction_value_myr: value('funding_transaction_value_myr'), reference_value_myr: value('funding_reference_value_myr'), actual_conversion_rate: value('actual_conversion_rate') || null }],
       fees: feeAmount ? [{ component_type: value('fee_type'), asset_id: value('fee_asset_id'), amount: feeAmount, value_myr: value('fee_value_myr'), accounting_treatment: 'EXPENSED', included_in_funding_amount: value('fee_included') === 'on', expense_account_id: value('fee_expense_account_id'), funding_account_id: value('fee_funding_account_id') || null }] : [],
@@ -170,7 +177,7 @@ function SettlementForm({ assets, accounts, cards, busy, onSettle }: Props) {
         <label>Merchant asset<select name="merchant_asset_id" required><option value="">Select</option>{assetOptions(assets)}</select></label><label>Merchant amount<input name="merchant_amount" inputMode="decimal" required /></label>
         <label>Billing asset<select name="billing_asset_id" required><option value="">Select</option>{assetOptions(assets)}</select></label><label>Billing amount<input name="billing_amount" inputMode="decimal" required /></label>
         <label>Merchant value MYR<input name="merchant_value_myr" inputMode="decimal" required /></label><label>Reference FX rate<input name="reference_fx_rate" inputMode="decimal" /><small>merchant asset / billing asset</small></label>
-        <label>Expense account<select name="expense_account_id" required><option value="">Select</option>{accountOptions(accounts, 'EXPENSE')}</select></label><label>Gain/loss account<select name="gain_loss_account_id" required><option value="">Select</option>{accountOptions(accounts, 'GAIN_LOSS')}</select></label>
+        <label>Expense account<select name="expense_account_id" required><option value="">Select</option>{accountOptions(accounts, 'EXPENSE')}</select></label><label>Category<select name="category_id" required><option value="">Select</option>{categoryOptions(categories, 'EXPENSE')}</select></label><label>Gain/loss account<select name="gain_loss_account_id" required><option value="">Select</option>{accountOptions(accounts, 'GAIN_LOSS')}</select></label>
         <fieldset className="wide fee-fields"><legend>Funding leg</legend>
           <label>Account<select name="funding_account_id" required><option value="">Select</option>{accountOptions(accounts, 'ASSET')}</select></label><label>Asset<select name="funding_asset_id" required><option value="">Select</option>{assetOptions(assets)}</select></label>
           <label>Actual deducted quantity<input name="funding_quantity" inputMode="decimal" required /></label><label>Settlement value MYR<input name="funding_transaction_value_myr" inputMode="decimal" required /></label>
@@ -199,11 +206,11 @@ function RefundForm({ assets, accounts, cards, busy, onRefund }: Props) {
     <form onSubmit={(event) => void submit(event)}><label>Purchase<select name="card_id" required><option value="">Select</option>{purchases.map((card) => <option value={card.id} key={card.id}>{card.merchant_name} · {formatMyr(card.merchant_value_myr)}</option>)}</select></label><label>Refunded at<input name="refunded_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label><label>External ID<input name="external_id" /></label><label>Refund value MYR<input name="refund_value_myr" inputMode="decimal" required /></label><label>Original expense account<select name="expense_account_id" required><option value="">Select</option>{accountOptions(accounts, 'EXPENSE')}</select></label><label>Receiving account<select name="account_id" required><option value="">Select</option>{accountOptions(accounts, 'ASSET')}</select></label><label>Returned asset<select name="asset_id" required><option value="">Select</option>{assetOptions(assets)}</select></label><label>Returned quantity<input name="quantity" inputMode="decimal" required /></label><label>Transaction value MYR<input name="transaction_value_myr" inputMode="decimal" required /></label><label>Reference value MYR<input name="reference_value_myr" inputMode="decimal" required /></label><label className="checkbox"><input name="full_refund" type="checkbox" /> Full refund</label><div className="wide form-actions"><button className="primary" disabled={busy}>Post refund</button></div></form></>
 }
 
-function RewardForms({ assets, accounts, cards, busy, onReward, onCreditReward }: Props) {
+function RewardForms({ assets, accounts, categories, cards, busy, onReward, onCreditReward }: Props) {
   const purchases = cards.filter((card) => card.transaction_type === 'PURCHASE' && card.status !== 'REVERSED')
   const pending = useMemo(() => purchases.flatMap((card) => card.rewards.filter((reward) => reward.status === 'PENDING').map((reward) => ({ ...reward, merchant: card.merchant_name }))), [purchases])
   async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const value = values(form); await onReward(value('card_id'), { reward_type: value('reward_type'), account_id: value('account_id'), asset_id: value('asset_id'), amount: value('amount'), earned_at: new Date(value('earned_at')).toISOString() }); form.reset() }
-  async function credit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const value = values(form); await onCreditReward(value('reward_id'), { income_account_id: value('income_account_id'), value_myr: value('value_myr'), valuation_rate: value('valuation_rate'), valuation_source: value('valuation_source'), credited_at: new Date(value('credited_at')).toISOString() }); form.reset() }
+  async function credit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const value = values(form); await onCreditReward(value('reward_id'), { income_account_id: value('income_account_id'), category_id: value('category_id'), value_myr: value('value_myr'), valuation_rate: value('valuation_rate'), valuation_source: value('valuation_source'), credited_at: new Date(value('credited_at')).toISOString() }); form.reset() }
   return <><div className="section-title"><div><span className="eyebrow">PENDING ≠ CREDITED</span><h2>Cashback and rewards</h2></div></div><div className="split-forms reward-forms"><form className="compact-form" onSubmit={(event) => void add(event)}><h3>Record pending reward</h3><label>Purchase<select name="card_id" required><option value="">Select</option>{purchases.map((card) => <option value={card.id} key={card.id}>{card.merchant_name}</option>)}</select></label><label>Type<input name="reward_type" defaultValue="CASHBACK" required /></label><label>Receiving account<select name="account_id" required><option value="">Select</option>{accountOptions(accounts, 'ASSET')}</select></label><label>Asset<select name="asset_id" required><option value="">Select</option>{assetOptions(assets)}</select></label><label>Amount<input name="amount" inputMode="decimal" required /></label><label>Earned at<input name="earned_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label><button className="primary" disabled={busy}>Save pending</button></form>
-    <form className="compact-form" onSubmit={(event) => void credit(event)}><h3>Credit reward</h3><label>Pending reward<select name="reward_id" required><option value="">Select</option>{pending.map((reward) => <option value={reward.id} key={reward.id}>{reward.merchant} · {reward.amount}</option>)}</select></label><label>Income account<select name="income_account_id" required><option value="">Select</option>{accountOptions(accounts, 'INCOME')}</select></label><label>Value MYR<input name="value_myr" inputMode="decimal" required /></label><label>Asset/MYR rate<input name="valuation_rate" inputMode="decimal" required /></label><label>Valuation source<input name="valuation_source" defaultValue="Credited price" required /></label><label>Credited at<input name="credited_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label><button className="primary" disabled={busy}>Post credited reward</button></form></div></>
+     <form className="compact-form" onSubmit={(event) => void credit(event)}><h3>Credit reward</h3><label>Pending reward<select name="reward_id" required><option value="">Select</option>{pending.map((reward) => <option value={reward.id} key={reward.id}>{reward.merchant} · {reward.amount}</option>)}</select></label><label>Income account<select name="income_account_id" required><option value="">Select</option>{accountOptions(accounts, 'INCOME')}</select></label><label>Category<select name="category_id" required><option value="">Select</option>{categoryOptions(categories, 'INCOME')}</select></label><label>Value MYR<input name="value_myr" inputMode="decimal" required /></label><label>Asset/MYR rate<input name="valuation_rate" inputMode="decimal" required /></label><label>Valuation source<input name="valuation_source" defaultValue="Credited price" required /></label><label>Credited at<input name="credited_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label><button className="primary" disabled={busy}>Post credited reward</button></form></div></>
 }
