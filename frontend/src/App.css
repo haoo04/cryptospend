@@ -609,6 +609,47 @@ select:focus {
   box-shadow: 0 0 0 3px rgb(28 96 71 / 8%);
 }
 
+input[readonly] {
+  color: #385c4c;
+  background: #f0f5f1;
+}
+
+.rate-equation {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.rate-equation > span {
+  white-space: nowrap;
+}
+
+.calculated-hint {
+  color: var(--green);
+}
+
+.trade-calculation {
+  padding: 13px 15px;
+  border: 1px solid #bed3c7;
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  color: #244c3a;
+  background: #f1f7f3;
+  font-size: 12px;
+}
+
+.trade-calculation span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.field-error {
+  color: var(--danger) !important;
+  font-size: 11px;
+}
+
 .wide {
   grid-column: 1 / -1;
 }

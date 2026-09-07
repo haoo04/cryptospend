@@ -22,6 +22,7 @@ import type {
 } from './api'
 import CardCenter from './CardCenter'
 import CategoryManager from './CategoryManager'
+import { addDecimal, divideDecimal, isPositiveDecimal, multiplyDecimal, subtractDecimal } from './decimal'
 import { formatMyr, localDateTimeValue } from './format'
 import FixedExpensesCenter from './FixedExpensesCenter'
 import ReportsCenter from './ReportsCenter'
@@ -931,7 +932,10 @@ function EntryModeTabs({ mode, onChange }: {
   )
 }
 
-function TradeForm({ assets, accounts, busy, onSubmit }: {
+const tradeRateDecimals = 30
+const myrDecimals = 6
+
+export function TradeForm({ assets, accounts, busy, onSubmit }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
@@ -940,36 +944,175 @@ function TradeForm({ assets, accounts, busy, onSubmit }: {
   const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
   const expenseAccounts = accounts.filter((account) => account.account_type === 'EXPENSE')
   const gainAccounts = accounts.filter((account) => account.account_type === 'GAIN_LOSS')
+  const [occurredAt, setOccurredAt] = useState(localDateTimeValue())
+  const [sellAssetId, setSellAssetId] = useState('')
+  const [sellQuantity, setSellQuantity] = useState('')
+  const [buyAssetId, setBuyAssetId] = useState('')
+  const [buyQuantity, setBuyQuantity] = useState('')
+  const [displayRate, setDisplayRate] = useState('')
+  const [grossValueMyr, setGrossValueMyr] = useState('')
+  const [feeAssetId, setFeeAssetId] = useState('')
+  const [feeAmount, setFeeAmount] = useState('')
+  const [feeIncluded, setFeeIncluded] = useState(false)
+  const [calculatedField, setCalculatedField] = useState<'buy' | 'rate' | null>(null)
+  const [calculationError, setCalculationError] = useState('')
+
+  const sellAsset = assets.find((asset) => asset.id === sellAssetId)
+  const buyAsset = assets.find((asset) => asset.id === buyAssetId)
+  const pairReady = Boolean(sellAsset && buyAsset && sellAsset.id !== buyAsset.id)
+  const myrPaired = sellAsset?.symbol === 'MYR' || buyAsset?.symbol === 'MYR'
+  const rateBase = myrPaired ? (sellAsset?.symbol === 'MYR' ? buyAsset : sellAsset) : sellAsset
+  const rateQuote = myrPaired ? (sellAsset?.symbol === 'MYR' ? sellAsset : buyAsset) : buyAsset
+  const includedFee = feeIncluded && feeAssetId === buyAssetId && feeAmount ? feeAmount : '0'
+  const feeInvalid = Boolean(feeAmount && !isPositiveDecimal(feeAmount))
+
+  function buyFee(
+    nextAmount = feeAmount,
+    nextAssetId = feeAssetId,
+    nextIncluded = feeIncluded,
+  ) {
+    if (!nextIncluded || nextAssetId !== buyAssetId || !nextAmount) return '0'
+    if (!isPositiveDecimal(nextAmount)) throw new Error('Included buy fee must be greater than zero')
+    return nextAmount
+  }
+
+  function setCalculatedGrossMyr(nextSell: string, grossBuy: string) {
+    if (sellAsset?.symbol === 'MYR') {
+      setGrossValueMyr(multiplyDecimal(nextSell, '1', myrDecimals))
+    } else if (buyAsset?.symbol === 'MYR') {
+      setGrossValueMyr(multiplyDecimal(grossBuy, '1', myrDecimals))
+    }
+  }
+
+  function calculateBuy(
+    nextSell: string,
+    nextRate: string,
+    nextFeeAmount = feeAmount,
+    nextFeeAssetId = feeAssetId,
+    nextFeeIncluded = feeIncluded,
+  ) {
+    setCalculationError('')
+    if (!pairReady || !nextSell || !nextRate) {
+      setBuyQuantity('')
+      if (myrPaired) setGrossValueMyr('')
+      return
+    }
+    if (!isPositiveDecimal(nextSell) || !isPositiveDecimal(nextRate)) {
+      setBuyQuantity('')
+      if (myrPaired) setGrossValueMyr('')
+      setCalculationError('Sell amount and rate must be greater than zero')
+      return
+    }
+
+    try {
+      const grossBuy = sellAsset?.symbol === 'MYR'
+        ? divideDecimal(nextSell, nextRate, buyAsset?.decimals ?? 18)
+        : multiplyDecimal(nextSell, nextRate, buyAsset?.decimals ?? 18)
+      const netBuy = subtractDecimal(
+        grossBuy,
+        buyFee(nextFeeAmount, nextFeeAssetId, nextFeeIncluded),
+      )
+      if (!isPositiveDecimal(netBuy)) throw new Error('Buy fee must be lower than the gross receive amount')
+      setBuyQuantity(netBuy)
+      setCalculatedGrossMyr(nextSell, grossBuy)
+    } catch (reason) {
+      setBuyQuantity('')
+      if (myrPaired) setGrossValueMyr('')
+      setCalculationError(reason instanceof Error ? reason.message : 'Unable to calculate receive amount')
+    }
+  }
+
+  function calculateRate(
+    nextSell: string,
+    nextBuy: string,
+    nextFeeAmount = feeAmount,
+    nextFeeAssetId = feeAssetId,
+    nextFeeIncluded = feeIncluded,
+  ) {
+    setCalculationError('')
+    if (!pairReady || !nextSell || !nextBuy) {
+      setDisplayRate('')
+      if (myrPaired) setGrossValueMyr('')
+      return
+    }
+    if (!isPositiveDecimal(nextSell) || !isPositiveDecimal(nextBuy)) {
+      setDisplayRate('')
+      if (myrPaired) setGrossValueMyr('')
+      setCalculationError('Sell and receive amounts must be greater than zero')
+      return
+    }
+
+    try {
+      const grossBuy = addDecimal(
+        nextBuy,
+        buyFee(nextFeeAmount, nextFeeAssetId, nextFeeIncluded),
+      )
+      const nextRate = sellAsset?.symbol === 'MYR'
+        ? divideDecimal(nextSell, grossBuy, tradeRateDecimals)
+        : divideDecimal(grossBuy, nextSell, tradeRateDecimals)
+      setDisplayRate(nextRate)
+      setCalculatedGrossMyr(nextSell, grossBuy)
+    } catch (reason) {
+      setDisplayRate('')
+      if (myrPaired) setGrossValueMyr('')
+      setCalculationError(reason instanceof Error ? reason.message : 'Unable to calculate exchange rate')
+    }
+  }
+
+  function recalculateForFee(nextAmount: string, nextAssetId: string, nextIncluded: boolean) {
+    if (calculatedField === 'rate') {
+      calculateRate(sellQuantity, buyQuantity, nextAmount, nextAssetId, nextIncluded)
+    } else {
+      calculateBuy(sellQuantity, displayRate, nextAmount, nextAssetId, nextIncluded)
+    }
+  }
+
+  function resetCalculatedValues() {
+    setSellQuantity('')
+    setBuyQuantity('')
+    setDisplayRate('')
+    setGrossValueMyr('')
+    setCalculatedField(null)
+    setCalculationError('')
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
     const data = new FormData(form)
     const value = (key: string) => String(data.get(key) ?? '')
-    const feeAmount = value('fee_amount')
+    const grossBuy = addDecimal(buyQuantity, buyFee())
+    const executionRate = divideDecimal(grossBuy, sellQuantity, tradeRateDecimals)
     await onSubmit({
-      occurred_at: new Date(value('occurred_at')).toISOString(),
+      occurred_at: new Date(occurredAt).toISOString(),
       account_id: value('account_id'),
-      sell_asset_id: value('sell_asset_id'),
-      sell_quantity: value('sell_quantity'),
-      buy_asset_id: value('buy_asset_id'),
-      buy_quantity: value('buy_quantity'),
-      execution_rate: value('execution_rate'),
-      gross_value_myr: value('gross_value_myr'),
+      sell_asset_id: sellAssetId,
+      sell_quantity: sellQuantity,
+      buy_asset_id: buyAssetId,
+      buy_quantity: buyQuantity,
+      execution_rate: executionRate,
+      gross_value_myr: grossValueMyr,
       order_id: value('order_id') || null,
       description: value('description'),
       gain_loss_account_id: value('gain_loss_account_id'),
       fee: feeAmount ? {
         component_type: value('fee_type'),
-        asset_id: value('fee_asset_id'),
+        asset_id: feeAssetId,
         amount: feeAmount,
         value_myr: value('fee_value_myr'),
         accounting_treatment: value('fee_treatment'),
-        included_in_funding_amount: value('fee_included') === 'on',
+        included_in_funding_amount: feeIncluded,
         expense_account_id: value('fee_expense_account_id') || null,
       } : null,
     })
     form.reset()
+    setOccurredAt(localDateTimeValue())
+    setSellAssetId('')
+    setBuyAssetId('')
+    setFeeAssetId('')
+    setFeeAmount('')
+    setFeeIncluded(false)
+    resetCalculatedValues()
   }
 
   return (
@@ -977,30 +1120,84 @@ function TradeForm({ assets, accounts, busy, onSubmit }: {
       <div className="section-title">
         <div><span className="eyebrow">FIFO DISPOSAL + ACQUISITION</span><h2>Record a trade</h2></div>
       </div>
-      <p className="form-intro">Buy quantity is the net asset actually received. Gross MYR, explicit fee and FIFO basis remain separate.</p>
+      <p className="form-intro">Enter the sell amount and displayed rate to calculate the net asset received. Gross MYR, explicit fee and FIFO basis remain separate.</p>
       <form onSubmit={(event) => void submit(event)}>
-        <label>Occurred at<input name="occurred_at" type="datetime-local" defaultValue={localDateTimeValue()} required /></label>
+        <label>Occurred at<input name="occurred_at" type="datetime-local" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} required /></label>
         <label>Exchange account<select name="account_id" required><option value="">Select account</option>{assetAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
-        <label>Sell asset<select name="sell_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
-        <label>Sell quantity<input name="sell_quantity" inputMode="decimal" placeholder="0.25" required /></label>
-        <label>Buy asset<select name="buy_asset_id" required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
-        <label>Net buy quantity<input name="buy_quantity" inputMode="decimal" placeholder="4241.50" required /></label>
-        <label>Execution rate<input name="execution_rate" inputMode="decimal" placeholder="17000" required /><small>buy asset / sell asset</small></label>
-        <label>Gross transaction value (MYR)<input name="gross_value_myr" inputMode="decimal" placeholder="4250" required /></label>
+        <label>Sell asset<select name="sell_asset_id" value={sellAssetId} onChange={(event) => {
+          setSellAssetId(event.target.value)
+          if (event.target.value === buyAssetId) setBuyAssetId('')
+          resetCalculatedValues()
+        }} required><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+        <label>{`Sell amount${sellAsset ? ` (${sellAsset.symbol})` : ''}`}<input name="sell_quantity" aria-label="Sell amount" inputMode="decimal" value={sellQuantity} onChange={(event) => {
+          const next = event.target.value
+          setSellQuantity(next)
+          if (calculatedField === 'rate') calculateRate(next, buyQuantity)
+          else calculateBuy(next, displayRate)
+        }} placeholder="2800" required /></label>
+        <label>Buy asset<select name="buy_asset_id" value={buyAssetId} onChange={(event) => {
+          setBuyAssetId(event.target.value)
+          setBuyQuantity('')
+          setDisplayRate('')
+          setGrossValueMyr('')
+          setCalculatedField(null)
+          setCalculationError('')
+        }} required><option value="">Select asset</option>{assets.filter((asset) => asset.id !== sellAssetId).map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+        <label>{`Receive amount${buyAsset ? ` (${buyAsset.symbol}, net)` : ' (net)'}`}<input name="buy_quantity" aria-label="Receive amount" inputMode="decimal" value={buyQuantity} onChange={(event) => {
+          const next = event.target.value
+          setBuyQuantity(next)
+          setCalculatedField('rate')
+          calculateRate(sellQuantity, next)
+        }} placeholder="690.0001725" required />{calculatedField === 'buy' && buyQuantity && <small className="calculated-hint">Calculated · edit to use the actual received amount</small>}</label>
+        <label>
+          Exchange rate
+          <span className="rate-equation">
+            <span>1 {rateBase?.symbol ?? 'asset'} =</span>
+            <input name="execution_rate" aria-label="Exchange rate" inputMode="decimal" value={displayRate} onChange={(event) => {
+              const next = event.target.value
+              setDisplayRate(next)
+              setCalculatedField('buy')
+              calculateBuy(sellQuantity, next)
+            }} placeholder={myrPaired ? '4.05797' : '0.01'} disabled={!pairReady} required />
+            <span>{rateQuote?.symbol ?? 'quote'}</span>
+          </span>
+          {calculatedField === 'rate' && displayRate && <small className="calculated-hint">Calculated from the two amounts</small>}
+          {!pairReady && <small>Select two different assets to set the rate direction.</small>}
+        </label>
+        <label>Gross transaction value (MYR)<input aria-label="Gross transaction value (MYR)" name="gross_value_myr" inputMode="decimal" value={grossValueMyr} onChange={(event) => setGrossValueMyr(event.target.value)} placeholder="2800" readOnly={myrPaired} required />{myrPaired && grossValueMyr && <small className="calculated-hint">Calculated from the MYR trade leg</small>}</label>
         <label>Gain/loss account<select name="gain_loss_account_id" required><option value="">Select account</option>{gainAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
         <label>Order ID<input name="order_id" placeholder="Optional" /></label>
         <label className="wide">Description<input name="description" placeholder="Hata ETH/MYR sale" /></label>
+        {pairReady && sellQuantity && displayRate && buyQuantity && !calculationError && (
+          <div className="wide trade-calculation" role="status">
+            <strong>{sellQuantity} {sellAsset?.symbol} {sellAsset?.symbol === 'MYR' ? '÷' : '×'} {displayRate} = {buyQuantity} {buyAsset?.symbol} net</strong>
+            <span>Included buy fee: {includedFee} {buyAsset?.symbol} · Gross MYR: {grossValueMyr || 'enter actual value'}</span>
+          </div>
+        )}
+        {calculationError && <div className="wide field-error" role="alert">{calculationError}</div>}
         <fieldset className="wide fee-fields">
           <legend>Optional explicit fee</legend>
           <label>Fee type<input name="fee_type" defaultValue="TRADING_FEE" /></label>
-          <label>Fee asset<select name="fee_asset_id"><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
-          <label>Fee quantity<input name="fee_amount" inputMode="decimal" placeholder="8.50" /></label>
+          <label>Fee asset<select name="fee_asset_id" value={feeAssetId} onChange={(event) => {
+            const next = event.target.value
+            setFeeAssetId(next)
+            recalculateForFee(feeAmount, next, feeIncluded)
+          }}><option value="">Select asset</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
+          <label>Fee quantity<input name="fee_amount" inputMode="decimal" value={feeAmount} onChange={(event) => {
+            const next = event.target.value
+            setFeeAmount(next)
+            recalculateForFee(next, feeAssetId, feeIncluded)
+          }} placeholder="8.50" />{feeInvalid && <small className="field-error">Fee must be greater than zero</small>}</label>
           <label>Fee value (MYR)<input name="fee_value_myr" inputMode="decimal" placeholder="8.50" /></label>
           <label>Treatment<select name="fee_treatment" defaultValue="EXPENSED"><option>EXPENSED</option><option>REDUCE_PROCEEDS</option><option>CAPITALIZED</option></select></label>
           <label>Expense account<select name="fee_expense_account_id"><option value="">Select account</option>{expenseAccounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
-          <label className="checkbox"><input name="fee_included" type="checkbox" /> Fee is already included in the funding/net amount</label>
+          <label className="checkbox"><input name="fee_included" type="checkbox" checked={feeIncluded} onChange={(event) => {
+            const next = event.target.checked
+            setFeeIncluded(next)
+            recalculateForFee(feeAmount, feeAssetId, next)
+          }} /> Fee is already included in the funding/net amount</label>
         </fieldset>
-        <div className="wide form-actions"><button className="primary" disabled={busy}>{busy ? 'Posting…' : 'Post trade'}</button></div>
+        <div className="wide form-actions"><button className="primary" disabled={busy || !pairReady || Boolean(calculationError) || feeInvalid}>{busy ? 'Posting…' : 'Post trade'}</button></div>
       </form>
     </>
   )

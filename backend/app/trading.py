@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,7 +22,7 @@ from app.models import (
     TransactionEvent,
     Transfer,
 )
-from app.money import micros_to_myr, myr_to_micros, parse_decimal
+from app.money import canonical_decimal, micros_to_myr, myr_to_micros, parse_decimal
 from app.schemas import EventDraftCreate, FeeCreate, TradeCreate, TransferCreate
 
 
@@ -129,6 +129,50 @@ def allocation_basis(allocations: list[LotAllocation]) -> int:
     return sum(allocation.basis_myr for allocation in allocations)
 
 
+def validate_trade_values(
+    command: TradeCreate,
+    sell_asset: Asset,
+    buy_asset: Asset,
+    fee_withheld: bool,
+) -> None:
+    sell_quantity = parse_decimal(command.sell_quantity)
+    gross_buy_quantity = parse_decimal(command.buy_quantity)
+    if command.fee and fee_withheld:
+        gross_buy_quantity += parse_decimal(command.fee.amount)
+
+    submitted_rate = parse_decimal(command.execution_rate)
+    rate_exponent = submitted_rate.as_tuple().exponent
+    rate_scale = -rate_exponent if isinstance(rate_exponent, int) and rate_exponent < 0 else 0
+    quantum = Decimal(1).scaleb(-rate_scale)
+    with localcontext() as context:
+        context.prec = max(
+            80,
+            len(sell_quantity.as_tuple().digits)
+            + len(gross_buy_quantity.as_tuple().digits)
+            + rate_scale
+            + 10,
+        )
+        expected_rate = gross_buy_quantity / sell_quantity
+        rounded_rate = expected_rate.quantize(quantum, rounding=ROUND_HALF_EVEN)
+    if rounded_rate != submitted_rate:
+        raise DomainError(
+            "execution_rate must be "
+            f"{canonical_decimal(rounded_rate)} {buy_asset.symbol} per {sell_asset.symbol} "
+            "for the supplied quantities"
+        )
+
+    expected_myr: Decimal | None = None
+    if sell_asset.symbol == "MYR":
+        expected_myr = sell_quantity
+    elif buy_asset.symbol == "MYR":
+        expected_myr = gross_buy_quantity
+    if expected_myr is not None and myr_to_micros(command.gross_value_myr) != myr_to_micros(expected_myr):
+        raise DomainError(
+            f"gross_value_myr must be {micros_to_myr(myr_to_micros(expected_myr))} "
+            "for the supplied MYR trade leg"
+        )
+
+
 def create_trade(session: Session, command: TradeCreate) -> TransactionEvent:
     require_asset_account(session, command.account_id)
     require_gain_account(session, command.gain_loss_account_id)
@@ -176,6 +220,7 @@ def create_trade(session: Session, command: TradeCreate) -> TransactionEvent:
             if command.fee.accounting_treatment == FeeTreatment.CAPITALIZED:
                 acquisition_basis += fee_value
 
+    validate_trade_values(command, sell_asset, buy_asset, fee_withheld)
     sell_gain = gross - sell_basis
     entries: list[dict] = [
         {

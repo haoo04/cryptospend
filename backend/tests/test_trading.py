@@ -128,6 +128,48 @@ def test_hata_sale_tracks_gross_fee_net_fifo_and_reversal(client: TestClient) ->
     assert portfolio["ETH"]["unrealized_gain_loss_myr"] == "250"
 
 
+def test_myr_to_usdt_trade_validates_rate_direction_and_gross_value(client: TestClient) -> None:
+    assets, accounts = setup_ledger(client)
+    acquire(
+        client,
+        event_type="OPENING_BALANCE",
+        account_id=accounts["Crypto Wallet"]["id"],
+        contra_account_id=accounts["Opening Balances"]["id"],
+        asset_id=assets["MYR"]["id"],
+        quantity="8400",
+        value_myr="8400",
+        occurred_at="2026-08-01T00:00:00Z",
+    )
+    payload = {
+        "occurred_at": "2026-08-10T02:00:00Z",
+        "account_id": accounts["Crypto Wallet"]["id"],
+        "sell_asset_id": assets["MYR"]["id"],
+        "sell_quantity": "2800",
+        "buy_asset_id": assets["USDT"]["id"],
+        "buy_quantity": "690.000172500043125011",
+        "execution_rate": "0.246428633035729687503928571429",
+        "gross_value_myr": "2800",
+        "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
+    }
+
+    reversed_rate = client.post("/api/trades", json={**payload, "execution_rate": "4.05797"})
+    assert reversed_rate.status_code == 422
+    assert "USDT per MYR" in reversed_rate.json()["detail"]
+
+    wrong_gross = client.post("/api/trades", json={**payload, "gross_value_myr": "690"})
+    assert wrong_gross.status_code == 422
+    assert "gross_value_myr must be 2800" in wrong_gross.json()["detail"]
+
+    trade = client.post("/api/trades", json=payload)
+    assert trade.status_code == 201, trade.text
+    body = trade.json()
+    assert body["transaction_value_myr"] == "2800"
+    assert any(
+        entry["asset_symbol"] == "USDT" and entry["quantity"] == "690.000172500043125011"
+        for entry in body["entries"]
+    )
+
+
 def test_transfer_preserves_lots_and_only_fee_reduces_global_quantity(client: TestClient) -> None:
     assets, accounts = setup_ledger(client)
     hata = client.post(
