@@ -47,6 +47,17 @@ class CategoryKind(StrEnum):
     EXPENSE = "EXPENSE"
 
 
+class RecurringFrequency(StrEnum):
+    WEEKLY = "WEEKLY"
+    MONTHLY = "MONTHLY"
+    YEARLY = "YEARLY"
+
+
+class RecurringOccurrenceAction(StrEnum):
+    RECORDED = "RECORDED"
+    SKIPPED = "SKIPPED"
+
+
 class EntryDirection(StrEnum):
     DEBIT = "DEBIT"
     CREDIT = "CREDIT"

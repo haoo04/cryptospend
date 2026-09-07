@@ -1,8 +1,17 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.enums import AccountChannel, AccountType, CategoryKind, EntryDirection, EventType, FeeTreatment
+from app.enums import (
+    AccountChannel,
+    AccountType,
+    CategoryKind,
+    EntryDirection,
+    EventType,
+    FeeTreatment,
+    RecurringFrequency,
+    RecurringOccurrenceAction,
+)
 from app.money import canonical_decimal, parse_decimal
 
 
@@ -54,6 +63,146 @@ class CategoryRead(BaseModel):
 
 class EventCategoryUpdate(BaseModel):
     category_id: str = Field(min_length=1)
+
+
+def clean_recurring_expense_name(value: str) -> str:
+    cleaned = " ".join(value.strip().split())
+    if not cleaned:
+        raise ValueError("recurring expense name must not be blank")
+    return cleaned
+
+
+class RecurringExpenseCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    amount_myr: str = Field(min_length=1)
+    frequency: RecurringFrequency
+    first_due_on: date
+    asset_id: str = Field(min_length=1)
+    funding_account_id: str = Field(min_length=1)
+    expense_account_id: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return clean_recurring_expense_name(value)
+
+    @field_validator("amount_myr")
+    @classmethod
+    def validate_amount(cls, value: str) -> str:
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("amount_myr must be greater than zero")
+        return normalized
+
+
+class RecurringExpenseUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    amount_myr: str | None = Field(default=None, min_length=1)
+    frequency: RecurringFrequency | None = None
+    next_due_on: date | None = None
+    asset_id: str | None = Field(default=None, min_length=1)
+    funding_account_id: str | None = Field(default=None, min_length=1)
+    expense_account_id: str | None = Field(default=None, min_length=1)
+    category_id: str | None = Field(default=None, min_length=1)
+    active: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        return clean_recurring_expense_name(value) if value is not None else None
+
+    @field_validator("amount_myr")
+    @classmethod
+    def validate_amount(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = canonical_decimal(value)
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("amount_myr must be greater than zero")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_change_and_schedule_pair(self) -> "RecurringExpenseUpdate":
+        if not self.model_fields_set:
+            raise ValueError("at least one recurring expense field must be provided")
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("recurring expense fields must not be null")
+        has_frequency = "frequency" in self.model_fields_set
+        has_next_due = "next_due_on" in self.model_fields_set
+        if has_frequency != has_next_due:
+            raise ValueError("frequency and next_due_on must be provided together when resetting the schedule")
+        return self
+
+
+class RecurringExpenseRecordCreate(BaseModel):
+    due_on: date
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RecurringExpenseSkipCreate(BaseModel):
+    due_on: date
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class RecurringExpenseSummaryRead(BaseModel):
+    active_count: int
+    overdue_count: int
+    weekly_total_myr: str
+    monthly_total_myr: str
+    yearly_total_myr: str
+    annualized_myr: str
+
+
+class RecurringExpenseRead(BaseModel):
+    id: str
+    name: str
+    amount_myr: str
+    frequency: str
+    anchor_on: str
+    next_due_on: str
+    due_status: str
+    annualized_amount_myr: str
+    asset_id: str
+    funding_account_id: str
+    expense_account_id: str
+    category_id: str
+    active: bool
+    created_at: str
+    updated_at: str
+
+
+class RecurringExpenseListRead(BaseModel):
+    as_of: str
+    timezone: str
+    summary: RecurringExpenseSummaryRead
+    items: list[RecurringExpenseRead]
+
+
+class RecurringExpenseOccurrenceRead(BaseModel):
+    id: str
+    recurring_expense_id: str
+    due_on: str
+    action: RecurringOccurrenceAction
+    scheduled_amount_myr: str
+    event_id: str | None
+    event_status: str | None
+    occurred_at: str | None
+    skip_reason: str | None
+    handled_at: str
+
+
+class RecurringExpenseActionRead(BaseModel):
+    occurrence: RecurringExpenseOccurrenceRead
+    recurring_expense: RecurringExpenseRead
 
 
 class ReceiptRead(BaseModel):

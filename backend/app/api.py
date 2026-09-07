@@ -62,6 +62,16 @@ from app.models import (
     TransactionEvent,
 )
 from app.money import micros_to_myr, myr_to_micros
+from app.recurring_expenses import (
+    create_recurring_expense,
+    list_occurrences,
+    list_recurring_expenses,
+    occurrence_read,
+    record_recurring_expense,
+    recurring_expense_read,
+    skip_recurring_expense,
+    update_recurring_expense,
+)
 from app.reporting import (
     add_journey_event,
     analytics_report,
@@ -102,6 +112,14 @@ from app.schemas import (
     PortfolioPositionRead,
     RateCreate,
     ReceiptRead,
+    RecurringExpenseActionRead,
+    RecurringExpenseCreate,
+    RecurringExpenseListRead,
+    RecurringExpenseOccurrenceRead,
+    RecurringExpenseRead,
+    RecurringExpenseRecordCreate,
+    RecurringExpenseSkipCreate,
+    RecurringExpenseUpdate,
     ReverseCreate,
     RewardCreate,
     RewardCreditCreate,
@@ -434,6 +452,103 @@ def update_category(category_id: str, payload: CategoryUpdate, session: Session 
         category.active = payload.active
     session.commit()
     return category
+
+
+@router.get("/recurring-expenses", response_model=RecurringExpenseListRead)
+def list_recurring_expense_templates(
+    include_inactive: bool = False, session: Session = Depends(get_session)
+) -> dict[str, object]:
+    return list_recurring_expenses(session, include_inactive)
+
+
+@router.post("/recurring-expenses", response_model=RecurringExpenseRead, status_code=201)
+def create_recurring_expense_template(
+    payload: RecurringExpenseCreate, session: Session = Depends(get_session)
+) -> dict[str, object]:
+    try:
+        expense = create_recurring_expense(session, payload)
+        session.commit()
+    except DomainError:
+        session.rollback()
+        raise
+    return recurring_expense_read(session, expense)
+
+
+@router.patch("/recurring-expenses/{recurring_expense_id}", response_model=RecurringExpenseRead)
+def update_recurring_expense_template(
+    recurring_expense_id: str,
+    payload: RecurringExpenseUpdate,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    try:
+        expense = update_recurring_expense(session, recurring_expense_id, payload)
+        session.commit()
+    except DomainError:
+        session.rollback()
+        raise
+    return recurring_expense_read(session, expense)
+
+
+@router.post(
+    "/recurring-expenses/{recurring_expense_id}/record",
+    response_model=RecurringExpenseActionRead,
+    status_code=201,
+)
+def record_recurring_expense_payment(
+    recurring_expense_id: str,
+    payload: RecurringExpenseRecordCreate,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    try:
+        expense, occurrence = record_recurring_expense(session, recurring_expense_id, payload)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise DomainError("this occurrence has already been handled", 409) from exc
+    except DomainError:
+        session.rollback()
+        raise
+    return {
+        "occurrence": occurrence_read(session, occurrence.id),
+        "recurring_expense": recurring_expense_read(session, expense),
+    }
+
+
+@router.post(
+    "/recurring-expenses/{recurring_expense_id}/skip",
+    response_model=RecurringExpenseActionRead,
+    status_code=201,
+)
+def skip_recurring_expense_occurrence(
+    recurring_expense_id: str,
+    payload: RecurringExpenseSkipCreate,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    try:
+        expense, occurrence = skip_recurring_expense(session, recurring_expense_id, payload)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise DomainError("this occurrence has already been handled", 409) from exc
+    except DomainError:
+        session.rollback()
+        raise
+    return {
+        "occurrence": occurrence_read(session, occurrence.id),
+        "recurring_expense": recurring_expense_read(session, expense),
+    }
+
+
+@router.get(
+    "/recurring-expenses/{recurring_expense_id}/occurrences",
+    response_model=list[RecurringExpenseOccurrenceRead],
+)
+def list_recurring_expense_occurrences(
+    recurring_expense_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    return list_occurrences(session, recurring_expense_id, limit)
 
 
 @router.get("/events", response_model=list[EventRead])

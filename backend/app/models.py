@@ -83,6 +83,70 @@ class Category(Base):
     )
 
 
+class RecurringExpense(Base):
+    __tablename__ = "recurring_expenses"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    amount_myr: Mapped[int] = mapped_column(Integer)
+    frequency: Mapped[str] = mapped_column(String(16))
+    anchor_on: Mapped[str] = mapped_column(String(10))
+    next_due_on: Mapped[str] = mapped_column(String(10))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
+    funding_account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    expense_account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    category_id: Mapped[str] = mapped_column(ForeignKey("categories.id"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now_text)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now_text, onupdate=utc_now_text)
+
+    asset: Mapped[Asset] = relationship()
+    funding_account: Mapped[Account] = relationship(foreign_keys=[funding_account_id])
+    expense_account: Mapped[Account] = relationship(foreign_keys=[expense_account_id])
+    category_ref: Mapped[Category] = relationship()
+    occurrences: Mapped[list[RecurringExpenseOccurrence]] = relationship(
+        back_populates="recurring_expense", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    __table_args__ = (
+        CheckConstraint("amount_myr > 0", name="recurring_expense_amount_positive"),
+        CheckConstraint(
+            "frequency IN ('WEEKLY','MONTHLY','YEARLY')", name="recurring_expense_frequency_valid"
+        ),
+        Index("ix_recurring_expenses_active_due", "active", "next_due_on"),
+    )
+
+
+class RecurringExpenseOccurrence(Base):
+    __tablename__ = "recurring_expense_occurrences"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    recurring_expense_id: Mapped[str] = mapped_column(ForeignKey("recurring_expenses.id"))
+    due_on: Mapped[str] = mapped_column(String(10))
+    action: Mapped[str] = mapped_column(String(16))
+    scheduled_amount_myr: Mapped[int] = mapped_column(Integer)
+    event_id: Mapped[str | None] = mapped_column(ForeignKey("transaction_events.id"), unique=True)
+    skip_reason: Mapped[str | None] = mapped_column(String(500))
+    handled_at: Mapped[str] = mapped_column(String(40))
+
+    recurring_expense: Mapped[RecurringExpense] = relationship(back_populates="occurrences")
+    event: Mapped[TransactionEvent | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("recurring_expense_id", "due_on", name="uq_recurring_expense_occurrence_due"),
+        CheckConstraint(
+            "action IN ('RECORDED','SKIPPED')", name="recurring_expense_occurrence_action_valid"
+        ),
+        CheckConstraint("scheduled_amount_myr > 0", name="recurring_expense_occurrence_amount_positive"),
+        CheckConstraint(
+            "((action = 'RECORDED' AND event_id IS NOT NULL AND skip_reason IS NULL) "
+            "OR (action = 'SKIPPED' AND event_id IS NULL))",
+            name="recurring_expense_occurrence_fields_valid",
+        ),
+        Index("ix_recurring_expense_occurrences_expense_due", "recurring_expense_id", "due_on"),
+    )
+
+
 class TransactionEvent(Base):
     __tablename__ = "transaction_events"
 
