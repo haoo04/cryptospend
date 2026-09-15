@@ -1160,8 +1160,18 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
   const buyAsset = assets.find((asset) => asset.id === buyAssetId)
   const pairReady = Boolean(sellAsset && buyAsset && sellAsset.id !== buyAsset.id)
   const myrPaired = sellAsset?.symbol === 'MYR' || buyAsset?.symbol === 'MYR'
-  const rateBase = myrPaired ? (sellAsset?.symbol === 'MYR' ? buyAsset : sellAsset) : sellAsset
-  const rateQuote = myrPaired ? (sellAsset?.symbol === 'MYR' ? sellAsset : buyAsset) : buyAsset
+  const usdtPaired = !myrPaired && (sellAsset?.symbol === 'USDT' || buyAsset?.symbol === 'USDT')
+  const rateBase = myrPaired
+    ? (sellAsset?.symbol === 'MYR' ? buyAsset : sellAsset)
+    : usdtPaired
+      ? (sellAsset?.symbol === 'USDT' ? buyAsset : sellAsset)
+      : sellAsset
+  const rateQuote = myrPaired
+    ? (sellAsset?.symbol === 'MYR' ? sellAsset : buyAsset)
+    : usdtPaired
+      ? (sellAsset?.symbol === 'USDT' ? sellAsset : buyAsset)
+      : buyAsset
+  const rateUsesDivision = Boolean(sellAsset && rateQuote && rateQuote.id === sellAsset.id)
   const includedFee = feeIncluded && feeAssetId === buyAssetId && feeAmount ? feeAmount : '0'
   const feeInvalid = Boolean(feeAmount && !isPositiveDecimal(feeAmount))
 
@@ -1204,7 +1214,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
     }
 
     try {
-      const grossBuy = sellAsset?.symbol === 'MYR'
+      const grossBuy = rateUsesDivision
         ? divideDecimal(nextSell, nextRate, buyAsset?.decimals ?? 18)
         : multiplyDecimal(nextSell, nextRate, buyAsset?.decimals ?? 18)
       const netBuy = subtractDecimal(
@@ -1246,7 +1256,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
         nextBuy,
         buyFee(nextFeeAmount, nextFeeAssetId, nextFeeIncluded),
       )
-      const nextRate = sellAsset?.symbol === 'MYR'
+      const nextRate = rateUsesDivision
         ? divideDecimal(nextSell, grossBuy, tradeRateDecimals)
         : divideDecimal(grossBuy, nextSell, tradeRateDecimals)
       setDisplayRate(nextRate)
@@ -1370,7 +1380,7 @@ export function TradeForm({ assets, accounts, busy, onSubmit }: {
         <label className="wide">Description<input name="description" placeholder="Hata ETH/MYR sale" /></label>
         {pairReady && sellQuantity && displayRate && buyQuantity && !calculationError && (
           <div className="wide trade-calculation" role="status">
-            <strong>{sellQuantity} {sellAsset?.symbol} {sellAsset?.symbol === 'MYR' ? '÷' : '×'} {displayRate} = {buyQuantity} {buyAsset?.symbol} net</strong>
+            <strong>{sellQuantity} {sellAsset?.symbol} {rateUsesDivision ? '÷' : '×'} {displayRate} = {buyQuantity} {buyAsset?.symbol} net</strong>
             <span>Included buy fee: {includedFee} {buyAsset?.symbol} · Gross MYR: {grossValueMyr || 'enter actual value'}</span>
           </div>
         )}
