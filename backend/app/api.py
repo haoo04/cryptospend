@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import PurePosixPath
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, undefer
 from starlette.datastructures import UploadFile
@@ -23,7 +24,7 @@ from app.cards import (
 )
 from app.cost_basis import portfolio_positions
 from app.database import get_session
-from app.enums import AccountChannel, AccountType, CategoryKind
+from app.enums import AccountChannel, AccountType, CategoryKind, EventStatus, EventType
 from app.google_drive import (
     GoogleDriveError,
     begin_authorization,
@@ -103,6 +104,7 @@ from app.schemas import (
     EventCategoryUpdate,
     EventDraftCreate,
     EventRead,
+    EventSearchPageRead,
     GoogleDriveBackupRead,
     GoogleDriveBackupStatusRead,
     JourneyCreate,
@@ -569,6 +571,94 @@ def list_events(
     if status:
         statement = statement.where(TransactionEvent.status == status.upper())
     return [event_read(event) for event in session.scalars(statement)]
+
+
+def event_search_conditions(
+    session: Session,
+    query: str | None,
+    event_type: EventType | None,
+    status: EventStatus | None,
+    category_id: str | None,
+    from_date: date | None,
+    to_date: date | None,
+) -> list[object]:
+    setting = session.get(Setting, "default")
+    timezone = setting.timezone if setting else "Asia/Kuala_Lumpur"
+    try:
+        zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise DomainError(f"configured timezone is unavailable: {timezone}") from exc
+
+    conditions: list[object] = []
+    if query and (clean_query := query.strip()):
+        pattern = f"%{clean_query}%"
+        conditions.append(
+            or_(
+                TransactionEvent.id.ilike(pattern),
+                TransactionEvent.description.ilike(pattern),
+                TransactionEvent.event_type.ilike(pattern),
+                func.replace(TransactionEvent.event_type, "_", " ").ilike(pattern),
+                TransactionEvent.category.ilike(pattern),
+                TransactionEvent.source.ilike(pattern),
+                TransactionEvent.external_id.ilike(pattern),
+                Category.name.ilike(pattern),
+            )
+        )
+    if event_type:
+        conditions.append(TransactionEvent.event_type == event_type.value)
+    if status:
+        conditions.append(TransactionEvent.status == status.value)
+    if category_id:
+        if category_id.casefold() == "uncategorized":
+            conditions.append(TransactionEvent.category_id.is_(None))
+        else:
+            conditions.append(TransactionEvent.category_id == category_id)
+
+    if from_date:
+        start = datetime.combine(from_date, time.min, tzinfo=zone)
+        conditions.append(TransactionEvent.occurred_at >= utc_text(start))
+    if to_date:
+        end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=zone)
+        conditions.append(TransactionEvent.occurred_at < utc_text(end))
+    if from_date and to_date and from_date > to_date:
+        raise DomainError("from_date must be on or before to_date")
+    return conditions
+
+
+@router.get("/events/search", response_model=EventSearchPageRead)
+def search_events(
+    q: str | None = Query(default=None, max_length=200),
+    event_type: EventType | None = None,
+    status: EventStatus | None = None,
+    category_id: str | None = Query(default=None, max_length=64),
+    from_date: date | None = None,
+    to_date: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    conditions = event_search_conditions(session, q, event_type, status, category_id, from_date, to_date)
+    join_category = TransactionEvent.category_id == Category.id
+    total = session.scalar(
+        select(func.count(TransactionEvent.id))
+        .select_from(TransactionEvent)
+        .outerjoin(Category, join_category)
+        .where(*conditions)
+    ) or 0
+    statement = (
+        select(TransactionEvent)
+        .outerjoin(Category, join_category)
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
+        .options(selectinload(TransactionEvent.category_ref))
+        .options(selectinload(TransactionEvent.receipt))
+        .where(*conditions)
+        .order_by(TransactionEvent.occurred_at.desc(), TransactionEvent.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = [event_read(event) for event in session.scalars(statement)]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/events/{event_id}", response_model=EventRead)

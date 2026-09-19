@@ -18,6 +18,8 @@ import type {
   RecurringExpenseList,
   Summary,
   TransactionEvent,
+  EventSearchFilters,
+  EventSearchPage,
   AnalyticsReport,
 } from './api'
 import CardCenter from './CardCenter'
@@ -29,6 +31,42 @@ import ReportsCenter from './ReportsCenter'
 import './App.css'
 
 type View = 'dashboard' | 'transactions' | 'add' | 'fixed-expenses' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
+
+const transactionEventTypes = [
+  'OPENING_BALANCE',
+  'SALARY',
+  'INCOME',
+  'EXPENSE',
+  'TRANSFER',
+  'TRADE',
+  'CARD_SETTLEMENT',
+  'CARD_REFUND',
+  'REWARD',
+  'FEE',
+  'ADJUSTMENT',
+  'REVERSAL',
+] as const
+
+const transactionStatuses = ['DRAFT', 'POSTED', 'REVERSED'] as const
+const transactionPageSize = 50
+
+type TransactionFilters = {
+  q: string
+  event_type: string
+  status: string
+  category_id: string
+  from_date: string
+  to_date: string
+}
+
+const emptyTransactionFilters: TransactionFilters = {
+  q: '',
+  event_type: '',
+  status: '',
+  category_id: '',
+  from_date: '',
+  to_date: '',
+}
 
 const emptySummary: Summary = {
   net_worth_myr: '0',
@@ -188,7 +226,7 @@ function App() {
       setMonthly(nextMonthly)
       setJourneys(nextJourneys)
       setSnapshots(nextSnapshots)
-      setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? null : null))
+      setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? current : null))
     } finally {
       setLoading(false)
     }
@@ -489,7 +527,6 @@ function App() {
         )}
         {ready && view === 'transactions' && (
           <Transactions
-            events={events}
             categories={categories}
             busy={busy}
             selected={selected}
@@ -506,9 +543,10 @@ function App() {
               () => api.deleteReceipt(event.id),
               { success: 'Receipt deleted successfully.', failure: 'Unable to delete receipt' },
             )}
-            onReverse={(event) => {
+            onReverse={async (event) => {
               const reason = window.prompt('Why are you reversing this posted event?')
-              if (reason) void runAction(
+              if (!reason) return false
+              return runAction(
                 () => api.reverseEvent(event.id, reason),
                 { success: 'Event reversed successfully.', failure: 'Unable to reverse event' },
               )
@@ -761,8 +799,10 @@ function Metric({ label, value, accent = false }: { label: string; value: string
   )
 }
 
-function Transactions({
+function TransactionTable({
   events,
+  count = events.length,
+  emptyText = 'Your first transaction will appear here.',
   categories,
   busy,
   selected,
@@ -773,6 +813,8 @@ function Transactions({
   onReverse,
 }: {
   events: TransactionEvent[]
+  count?: number
+  emptyText?: string
   categories: Category[]
   busy: boolean
   selected: TransactionEvent | null
@@ -780,7 +822,7 @@ function Transactions({
   onChangeCategory: (event: TransactionEvent, categoryId: string) => Promise<boolean>
   onUploadReceipt: (event: TransactionEvent, file: File) => Promise<boolean>
   onDeleteReceipt: (event: TransactionEvent) => Promise<boolean>
-  onReverse: (event: TransactionEvent) => void
+  onReverse: (event: TransactionEvent) => Promise<boolean>
 }) {
   const selectedCategoryOptions = selected?.category_kind
     ? categories.filter((category) => category.kind === selected.category_kind && (category.active || category.id === selected.category_id))
@@ -794,7 +836,7 @@ function Transactions({
             <span className="eyebrow">IMMUTABLE HISTORY</span>
             <h2>Ledger events</h2>
           </div>
-          <span className="count">{events.length}</span>
+          <span className="count">{count}</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -827,7 +869,7 @@ function Transactions({
               ))}
             </tbody>
           </table>
-          {!events.length && <Empty text="Your first transaction will appear here." />}
+          {!events.length && <Empty text={emptyText} />}
         </div>
       </div>
       {selected && (
@@ -898,10 +940,159 @@ function Transactions({
             )}
           </section>
           {selected.status === 'POSTED' && !selected.reverses_event_id && (
-            <button className="danger" onClick={() => onReverse(selected)}>Reverse event</button>
+            <button className="danger" onClick={() => void onReverse(selected)}>Reverse event</button>
           )}
         </aside>
       )}
+    </section>
+  )
+}
+
+export function Transactions({
+  categories,
+  busy,
+  selected,
+  onSelect,
+  onChangeCategory,
+  onUploadReceipt,
+  onDeleteReceipt,
+  onReverse,
+}: {
+  categories: Category[]
+  busy: boolean
+  selected: TransactionEvent | null
+  onSelect: (event: TransactionEvent | null) => void
+  onChangeCategory: (event: TransactionEvent, categoryId: string) => Promise<boolean>
+  onUploadReceipt: (event: TransactionEvent, file: File) => Promise<boolean>
+  onDeleteReceipt: (event: TransactionEvent) => Promise<boolean>
+  onReverse: (event: TransactionEvent) => Promise<boolean>
+}) {
+  const [draftFilters, setDraftFilters] = useState<TransactionFilters>(emptyTransactionFilters)
+  const [filters, setFilters] = useState<TransactionFilters>(emptyTransactionFilters)
+  const [page, setPage] = useState(1)
+  const [result, setResult] = useState<EventSearchPage>({ items: [], total: 0, page: 1, page_size: transactionPageSize })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const loadEvents = useCallback(async (nextFilters: TransactionFilters, nextPage: number) => {
+    setLoading(true)
+    setError('')
+    const query: EventSearchFilters = {
+      page: nextPage,
+      page_size: transactionPageSize,
+    }
+    if (nextFilters.q.trim()) query.q = nextFilters.q.trim()
+    if (nextFilters.event_type) query.event_type = nextFilters.event_type
+    if (nextFilters.status) query.status = nextFilters.status
+    if (nextFilters.category_id) query.category_id = nextFilters.category_id
+    if (nextFilters.from_date) query.from_date = nextFilters.from_date
+    if (nextFilters.to_date) query.to_date = nextFilters.to_date
+    try {
+      const nextResult = await api.searchEvents(query)
+      setResult(nextResult)
+      return nextResult
+    } catch (reason) {
+      setError(reasonMessage(reason, 'Unable to load transactions'))
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadEvents(filters, page), 0)
+    return () => window.clearTimeout(timer)
+  }, [filters, loadEvents, page])
+
+  useEffect(() => {
+    if (!selected) return
+    const refreshed = result.items.find((event) => event.id === selected.id)
+    if (refreshed && refreshed !== selected) onSelect(refreshed)
+  }, [onSelect, result, selected])
+
+  function updateDraftFilter(key: keyof TransactionFilters, value: string) {
+    setDraftFilters((current) => ({ ...current, [key]: value }))
+  }
+
+  function applyFilters(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (draftFilters.from_date && draftFilters.to_date && draftFilters.from_date > draftFilters.to_date) {
+      setError('From date must be on or before to date.')
+      return
+    }
+    setError('')
+    setPage(1)
+    setFilters({ ...draftFilters, q: draftFilters.q.trim() })
+    onSelect(null)
+  }
+
+  function clearFilters() {
+    setDraftFilters(emptyTransactionFilters)
+    setFilters(emptyTransactionFilters)
+    setPage(1)
+    setError('')
+    onSelect(null)
+  }
+
+  function changePage(nextPage: number) {
+    const totalPages = Math.max(1, Math.ceil(result.total / result.page_size))
+    if (nextPage < 1 || nextPage > totalPages || nextPage === page) return
+    setPage(nextPage)
+    onSelect(null)
+  }
+
+  async function reloadAfter(action: () => Promise<boolean>) {
+    const success = await action()
+    if (success) {
+      const nextResult = await loadEvents(filters, page)
+      if (selected && nextResult && !nextResult.items.some((event) => event.id === selected.id)) onSelect(null)
+    }
+    return success
+  }
+
+  const totalPages = Math.max(1, Math.ceil(result.total / result.page_size))
+  const firstResult = result.total ? (result.page - 1) * result.page_size + 1 : 0
+  const lastResult = result.total ? Math.min(result.page * result.page_size, result.total) : 0
+  const hasActiveFilters = Object.values(filters).some((value) => value !== '')
+  const emptyText = hasActiveFilters ? 'No transactions match the current filters.' : 'Your first transaction will appear here.'
+
+  return (
+    <section className="transactions-page">
+      <div className="panel transaction-controls-panel">
+        <div className="section-title">
+          <div><span className="eyebrow">SEARCH HISTORY</span><h2>Find transactions</h2></div>
+          <span className="count">{result.total}</span>
+        </div>
+        <form className="transaction-filters" onSubmit={(event) => void applyFilters(event)}>
+          <label className="transaction-search">Search transactions<input aria-label="Search transactions" value={draftFilters.q} onChange={(event) => updateDraftFilter('q', event.target.value)} placeholder="Description, type, category or ID" /></label>
+          <label>Type<select aria-label="Transaction type" value={draftFilters.event_type} onChange={(event) => updateDraftFilter('event_type', event.target.value)}><option value="">All types</option>{transactionEventTypes.map((type) => <option value={type} key={type}>{type.replaceAll('_', ' ')}</option>)}</select></label>
+          <label>Status<select aria-label="Transaction status" value={draftFilters.status} onChange={(event) => updateDraftFilter('status', event.target.value)}><option value="">All statuses</option>{transactionStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select></label>
+          <label>Category<select aria-label="Transaction category" value={draftFilters.category_id} onChange={(event) => updateDraftFilter('category_id', event.target.value)}><option value="">All categories</option><option value="uncategorized">Uncategorized</option>{categories.map((category) => <option value={category.id} key={category.id}>{category.name}{category.active ? '' : ' (inactive)'}</option>)}</select></label>
+          <label>From date<input aria-label="From date" type="date" value={draftFilters.from_date} onChange={(event) => updateDraftFilter('from_date', event.target.value)} /></label>
+          <label>To date<input aria-label="To date" type="date" value={draftFilters.to_date} onChange={(event) => updateDraftFilter('to_date', event.target.value)} /></label>
+          <div className="transaction-filter-actions"><button className="primary" type="submit">Apply filters</button><button className="secondary" type="button" onClick={clearFilters}>Clear</button></div>
+        </form>
+        {error && <p className="transaction-error" role="alert">{error}</p>}
+        <div className="transaction-result-meta">
+          <span>{result.total ? `Showing ${firstResult}–${lastResult} of ${result.total}` : hasActiveFilters ? 'No transactions match the current filters.' : 'No transactions yet.'}</span>
+          {loading && <span role="status">Loading transactions…</span>}
+          {!loading && result.total > 0 && <span>Page {result.page} of {totalPages}</span>}
+        </div>
+        {result.total > 0 && <div className="transaction-pagination" aria-label="Transaction pagination"><button className="secondary" type="button" disabled={loading || page === 1} onClick={() => changePage(page - 1)}>Previous</button><span>Page {result.page} of {totalPages}</span><button className="secondary" type="button" disabled={loading || page >= totalPages} onClick={() => changePage(page + 1)}>Next</button></div>}
+      </div>
+      <TransactionTable
+        events={result.items}
+        count={result.total}
+        emptyText={loading ? 'Loading transactions…' : emptyText}
+        categories={categories}
+        busy={busy || loading}
+        selected={selected}
+        onSelect={onSelect}
+        onChangeCategory={(event, categoryId) => reloadAfter(() => onChangeCategory(event, categoryId))}
+        onUploadReceipt={(event, file) => reloadAfter(() => onUploadReceipt(event, file))}
+        onDeleteReceipt={(event) => reloadAfter(() => onDeleteReceipt(event))}
+        onReverse={(event) => reloadAfter(() => onReverse(event))}
+      />
     </section>
   )
 }

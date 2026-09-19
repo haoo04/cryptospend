@@ -516,6 +516,69 @@ button:disabled {
   gap: 20px;
 }
 
+.transactions-page {
+  display: grid;
+  gap: 20px;
+}
+
+.transaction-controls-panel .section-title {
+  margin-bottom: 18px;
+}
+
+.transaction-filters {
+  grid-template-columns: minmax(220px, 2fr) repeat(5, minmax(110px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.transaction-search {
+  min-width: 0;
+}
+
+.transaction-filter-actions {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.transaction-filter-actions button {
+  white-space: nowrap;
+}
+
+.transaction-result-meta,
+.transaction-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.transaction-result-meta {
+  margin-top: 16px;
+}
+
+.transaction-error {
+  margin: 14px 0 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.transaction-pagination {
+  margin-top: 18px;
+  justify-content: flex-end;
+}
+
+.transaction-pagination span {
+  min-width: 90px;
+  text-align: center;
+}
+
+.transaction-loading {
+  margin-top: 18px;
+}
+
 .table-wrap {
   margin: 18px -24px -24px;
   overflow-x: auto;
@@ -1202,6 +1265,14 @@ input[readonly] {
   .detail-panel {
     position: static;
   }
+
+  .transaction-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .transaction-search {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1248,8 +1319,30 @@ input[readonly] {
   form,
   .fee-fields,
   .report-controls,
-  .comparison-path {
+  .comparison-path,
+  .transaction-filters {
     grid-template-columns: 1fr;
+  }
+
+  .transaction-search {
+    grid-column: auto;
+  }
+
+  .transaction-filter-actions {
+    align-items: stretch;
+  }
+
+  .transaction-filter-actions button {
+    flex: 1;
+  }
+
+  .transaction-result-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .transaction-pagination {
+    justify-content: space-between;
   }
 
   .snapshot-list > div:not(.section-title) {

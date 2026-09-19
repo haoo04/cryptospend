@@ -93,6 +93,24 @@ export type TransactionEvent = {
   receipt: ReceiptMetadata | null
 }
 
+export type EventSearchFilters = {
+  q?: string
+  event_type?: string
+  status?: string
+  category_id?: string
+  from_date?: string
+  to_date?: string
+  page?: number
+  page_size?: number
+}
+
+export type EventSearchPage = {
+  items: TransactionEvent[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export type Summary = {
   net_worth_myr: string
   income_myr: string
@@ -439,6 +457,14 @@ export const api = {
   recurringExpenses: (includeInactive = false) =>
     request<RecurringExpenseList>(`/recurring-expenses${includeInactive ? '?include_inactive=true' : ''}`),
   events: () => request<TransactionEvent[]>('/events'),
+  searchEvents: (filters: EventSearchFilters = {}) => {
+    const query = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value))
+    })
+    const suffix = query.toString()
+    return request<EventSearchPage>(`/events/search${suffix ? `?${suffix}` : ''}`)
+  },
   summary: () => request<Summary>('/reports/summary'),
   portfolio: (asOf?: string) =>
     request<PortfolioPosition[]>(`/reports/portfolio${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''}`),

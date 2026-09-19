@@ -373,6 +373,13 @@ class EventRead(BaseModel):
     receipt: ReceiptRead | None = None
 
 
+class EventSearchPageRead(BaseModel):
+    items: list[EventRead]
+    total: int
+    page: int
+    page_size: int
+
+
 class SettingsRead(BaseModel):
     reporting_currency: str
     timezone: str
