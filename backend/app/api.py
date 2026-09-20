@@ -37,6 +37,7 @@ from app.google_drive import (
 from app.ledger import (
     DomainError,
     account_balances,
+    account_ledger_rows,
     add_audit,
     category_kind_for_account_types,
     create_manual_event,
@@ -90,6 +91,7 @@ from app.reporting import (
 )
 from app.schemas import (
     AccountCreate,
+    AccountLedgerPageRead,
     AccountRead,
     AssetCreate,
     AssetRead,
@@ -298,19 +300,65 @@ def create_asset(payload: AssetCreate, session: Session = Depends(get_session)) 
 def list_accounts(session: Session = Depends(get_session)) -> list[dict]:
     balances = account_balances(session)
     available = available_account_balances(session, balances)
-    return [
-        {
-            "id": account.id,
-            "name": account.name,
-            "account_type": account.account_type,
-            "channel_type": account.channel_type,
-            "provider": account.provider,
-            "closed": account.closed,
-            "balances": balances.get(account.id, []),
-            "available_balances": available.get(account.id, []),
-        }
-        for account in session.scalars(select(Account).order_by(Account.account_type, Account.name))
-    ]
+    return [account_read(account, balances, available) for account in session.scalars(
+        select(Account).order_by(Account.account_type, Account.name)
+    )]
+
+
+def account_read(
+    account: Account,
+    balances: dict[str, list[dict[str, str]]],
+    available: dict[str, list[dict[str, str]]],
+) -> dict:
+    return {
+        "id": account.id,
+        "name": account.name,
+        "account_type": account.account_type,
+        "channel_type": account.channel_type,
+        "provider": account.provider,
+        "closed": account.closed,
+        "balances": balances.get(account.id, []),
+        "available_balances": available.get(account.id, []),
+    }
+
+
+@router.get("/accounts/{account_id}/ledger", response_model=AccountLedgerPageRead)
+def account_ledger(
+    account_id: str,
+    q: str | None = Query(default=None, max_length=200),
+    asset_id: str | None = Query(default=None, max_length=64),
+    event_type: EventType | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    account = session.get(Account, account_id)
+    if account is None:
+        raise DomainError("account not found", 404)
+    timezone, start, end = date_range_bounds(session, from_date, to_date)
+    rows = account_ledger_rows(
+        session,
+        account_id,
+        query=q,
+        asset_id=asset_id,
+        event_type=event_type.value if event_type else None,
+        start=start,
+        end=end,
+    )
+    balances = account_balances(session)
+    available = available_account_balances(session, balances)
+    total = len(rows)
+    offset = (page - 1) * page_size
+    return {
+        "account": account_read(account, balances, available),
+        "timezone": timezone,
+        "items": rows[offset:offset + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.post("/accounts", response_model=AccountRead, status_code=201)
@@ -327,16 +375,7 @@ def create_account(payload: AccountCreate, session: Session = Depends(get_sessio
     except IntegrityError as exc:
         session.rollback()
         raise DomainError("an account with this identity already exists", 409) from exc
-    return {
-        "id": account.id,
-        "name": account.name,
-        "account_type": account.account_type,
-        "channel_type": account.channel_type,
-        "provider": account.provider,
-        "closed": account.closed,
-        "balances": [],
-        "available_balances": [],
-    }
+    return account_read(account, {}, {})
 
 
 @router.post("/onboarding", response_model=SettingsRead)
@@ -572,6 +611,28 @@ def list_events(
     return [event_read(event) for event in session.scalars(statement)]
 
 
+def configured_timezone(session: Session) -> tuple[str, ZoneInfo]:
+    setting = session.get(Setting, "default")
+    timezone = setting.timezone if setting else "Asia/Kuala_Lumpur"
+    try:
+        return timezone, ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise DomainError(f"configured timezone is unavailable: {timezone}") from exc
+
+
+def date_range_bounds(
+    session: Session,
+    from_date: date | None,
+    to_date: date | None,
+) -> tuple[str, str | None, str | None]:
+    if from_date and to_date and from_date > to_date:
+        raise DomainError("from_date must be on or before to_date")
+    timezone, zone = configured_timezone(session)
+    start = utc_text(datetime.combine(from_date, time.min, tzinfo=zone)) if from_date else None
+    end = utc_text(datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=zone)) if to_date else None
+    return timezone, start, end
+
+
 def event_search_conditions(
     session: Session,
     query: str | None,
@@ -581,12 +642,7 @@ def event_search_conditions(
     from_date: date | None,
     to_date: date | None,
 ) -> list[object]:
-    setting = session.get(Setting, "default")
-    timezone = setting.timezone if setting else "Asia/Kuala_Lumpur"
-    try:
-        zone = ZoneInfo(timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise DomainError(f"configured timezone is unavailable: {timezone}") from exc
+    _, start, end = date_range_bounds(session, from_date, to_date)
 
     conditions: list[object] = []
     if query and (clean_query := query.strip()):
@@ -613,14 +669,10 @@ def event_search_conditions(
         else:
             conditions.append(TransactionEvent.category_id == category_id)
 
-    if from_date:
-        start = datetime.combine(from_date, time.min, tzinfo=zone)
-        conditions.append(TransactionEvent.occurred_at >= utc_text(start))
-    if to_date:
-        end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=zone)
-        conditions.append(TransactionEvent.occurred_at < utc_text(end))
-    if from_date and to_date and from_date > to_date:
-        raise DomainError("from_date must be on or before to_date")
+    if start:
+        conditions.append(TransactionEvent.occurred_at >= start)
+    if end:
+        conditions.append(TransactionEvent.occurred_at < end)
     return conditions
 
 

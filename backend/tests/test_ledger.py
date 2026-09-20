@@ -254,3 +254,73 @@ def test_event_search_filters_dates_and_pagination(client: TestClient) -> None:
     assert "from_date must be on or before to_date" in invalid.json()["detail"]
 
     assert isinstance(client.get("/api/events").json(), list)
+
+
+def test_account_ledger_keeps_natural_signs_running_balances_and_filters(client: TestClient) -> None:
+    assets, accounts = onboard(client)
+    food_category = next(
+        category["id"]
+        for category in client.get("/api/categories").json()
+        if category["kind"] == "EXPENSE" and category["name"] == "Food"
+    )
+
+    def expense(description: str, occurred_at: str, amount: str) -> dict:
+        response = client.post(
+            "/api/events/manual",
+            json={
+                "event_type": "EXPENSE",
+                "occurred_at": occurred_at,
+                "description": description,
+                "category_id": food_category,
+                "debit_account_id": accounts["General Expense"]["id"],
+                "credit_account_id": accounts["Cash"]["id"],
+                "asset_id": assets["MYR"]["id"],
+                "quantity": amount,
+                "book_amount_myr": amount,
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    first = expense("First lunch", "2026-08-01T12:00:00+08:00", "25.50")
+    second = expense("Second lunch", "2026-08-02T12:00:00+08:00", "10")
+    reversal = client.post(f"/api/events/{first['id']}/reverse", json={"reason": "duplicate"})
+    assert reversal.status_code == 201, reversal.text
+
+    cash_id = accounts["Cash"]["id"]
+    response = client.get(f"/api/accounts/{cash_id}/ledger")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["timezone"] == "Asia/Kuala_Lumpur"
+    assert body["total"] == 3
+    by_event = {item["event_id"]: item for item in body["items"]}
+    assert by_event[first["id"]]["quantity_change"] == "-25.5"
+    assert by_event[first["id"]]["balance_after_quantity"] == "-25.5"
+    assert by_event[second["id"]]["quantity_change"] == "-10"
+    assert by_event[second["id"]]["balance_after_quantity"] == "-35.5"
+    assert by_event[reversal.json()["id"]]["event_type"] == "REVERSAL"
+    assert by_event[reversal.json()["id"]]["quantity_change"] == "25.5"
+    assert by_event[reversal.json()["id"]]["balance_after_quantity"] == "-10"
+    assert body["account"]["balances"] == [
+        {
+            "asset_id": assets["MYR"]["id"],
+            "asset_symbol": "MYR",
+            "quantity": "-10",
+            "book_amount_myr": "-10",
+        }
+    ]
+
+    filtered = client.get(
+        f"/api/accounts/{cash_id}/ledger",
+        params={"from_date": "2026-08-02", "to_date": "2026-08-02", "q": "General Expense"},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["items"][0]["event_id"] == second["id"]
+    assert filtered.json()["items"][0]["balance_after_quantity"] == "-35.5"
+
+    assert client.get("/api/accounts/not-an-account/ledger").status_code == 404
+    assert client.get(
+        f"/api/accounts/{cash_id}/ledger",
+        params={"from_date": "2026-08-03", "to_date": "2026-08-01"},
+    ).status_code == 422

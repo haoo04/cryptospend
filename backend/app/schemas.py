@@ -351,6 +351,43 @@ class AccountRead(BaseModel):
     available_balances: list[BalanceRead] = Field(default_factory=list)
 
 
+class AccountLedgerCounterpartyRead(BaseModel):
+    account_id: str
+    account_name: str
+    account_type: str
+
+
+class AccountLedgerItemRead(BaseModel):
+    event_id: str
+    event_type: str
+    event_status: str
+    occurred_at: str
+    time_precision: str
+    description: str
+    category: str | None
+    source: str
+    reverses_event_id: str | None
+    reversed_by_event_id: str | None
+    asset_id: str
+    asset_symbol: str
+    quantity_change: str
+    book_amount_myr_change: str
+    balance_after_quantity: str
+    balance_after_book_amount_myr: str
+    entry_count: int
+    counterparties: list[AccountLedgerCounterpartyRead] = Field(default_factory=list)
+    receipt_attached: bool
+
+
+class AccountLedgerPageRead(BaseModel):
+    account: AccountRead
+    timezone: str
+    items: list[AccountLedgerItemRead]
+    total: int
+    page: int
+    page_size: int
+
+
 class EntryRead(BaseModel):
     id: str
     account_id: str

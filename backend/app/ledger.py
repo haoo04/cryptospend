@@ -324,6 +324,19 @@ def reverse_event(session: Session, original: TransactionEvent, reason: str) -> 
     return reversal
 
 
+NATURAL_CREDIT_ACCOUNT_TYPES = {
+    AccountType.LIABILITY.value,
+    AccountType.INCOME.value,
+    AccountType.EQUITY.value,
+    AccountType.GAIN_LOSS.value,
+}
+
+
+def natural_entry_sign(account_type: str, direction: str) -> int:
+    direction_sign = 1 if direction == EntryDirection.DEBIT.value else -1
+    return -direction_sign if account_type in NATURAL_CREDIT_ACCOUNT_TYPES else direction_sign
+
+
 def account_balances(session: Session) -> dict[str, list[dict[str, str]]]:
     rows = session.execute(
         select(LedgerEntry, Account, Asset)
@@ -335,15 +348,8 @@ def account_balances(session: Session) -> dict[str, list[dict[str, str]]]:
     quantities: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
     books: dict[tuple[str, str], int] = defaultdict(int)
     symbols: dict[str, str] = {}
-    credit_natural = {
-        AccountType.LIABILITY.value,
-        AccountType.INCOME.value,
-        AccountType.EQUITY.value,
-        AccountType.GAIN_LOSS.value,
-    }
     for entry, account, asset in rows:
-        direction_sign = 1 if entry.direction == EntryDirection.DEBIT.value else -1
-        natural_sign = -direction_sign if account.account_type in credit_natural else direction_sign
+        natural_sign = natural_entry_sign(account.account_type, entry.direction)
         key = (account.id, asset.id)
         quantities[key] += parse_decimal(entry.quantity) * natural_sign
         books[key] += entry.book_amount_myr * natural_sign
@@ -359,6 +365,132 @@ def account_balances(session: Session) -> dict[str, list[dict[str, str]]]:
             }
         )
     return result
+
+
+def account_ledger_rows(
+    session: Session,
+    account_id: str,
+    *,
+    query: str | None = None,
+    asset_id: str | None = None,
+    event_type: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[dict[str, object]]:
+    account = session.get(Account, account_id)
+    if account is None:
+        raise DomainError("account not found", 404)
+
+    events = session.scalars(
+        select(TransactionEvent)
+        .join(LedgerEntry, LedgerEntry.event_id == TransactionEvent.id)
+        .where(LedgerEntry.account_id == account_id)
+        .where(TransactionEvent.status != EventStatus.DRAFT.value)
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.account))
+        .options(selectinload(TransactionEvent.entries).selectinload(LedgerEntry.asset))
+        .options(selectinload(TransactionEvent.receipt))
+        .distinct()
+        .order_by(TransactionEvent.occurred_at, TransactionEvent.created_at, TransactionEvent.id)
+    ).all()
+
+    clean_query = query.strip().casefold() if query else ""
+    running_quantities: dict[str, Decimal] = defaultdict(Decimal)
+    running_books: dict[str, int] = defaultdict(int)
+    rows: list[tuple[tuple[str, str, str, str], dict[str, object]]] = []
+
+    for event in events:
+        target_entries = [entry for entry in event.entries if entry.account_id == account_id]
+        entries_by_asset: dict[str, list[LedgerEntry]] = defaultdict(list)
+        for entry in target_entries:
+            entries_by_asset[entry.asset_id].append(entry)
+
+        counterparties = {
+            entry.account.id: {
+                "account_id": entry.account.id,
+                "account_name": entry.account.name,
+                "account_type": entry.account.account_type,
+            }
+            for entry in event.entries
+            if entry.account_id != account_id
+        }
+        counterparty_rows = sorted(
+            counterparties.values(),
+            key=lambda item: (str(item["account_name"]).casefold(), str(item["account_id"])),
+        )
+        event_search_text = " ".join(
+            str(value)
+            for value in (
+                event.id,
+                event.event_type,
+                event.event_type.replace("_", " "),
+                event.description,
+                event.category,
+                event.source,
+                event.external_id,
+                *(str(item["account_name"]) for item in counterparty_rows),
+                *(str(item["account_id"]) for item in counterparty_rows),
+                *(str(item["account_type"]) for item in counterparty_rows),
+            )
+            if value
+        ).casefold()
+        for current_asset_id in sorted(
+            entries_by_asset,
+            key=lambda item: (
+                entries_by_asset[item][0].asset.symbol.casefold(),
+                item,
+            ),
+        ):
+            asset_entries = entries_by_asset[current_asset_id]
+            asset = asset_entries[0].asset
+            matches_event_filters = (
+                (not clean_query or clean_query in f"{event_search_text} {current_asset_id} {asset.symbol}".casefold())
+                and (event_type is None or event.event_type == event_type)
+                and (start is None or event.occurred_at >= start)
+                and (end is None or event.occurred_at < end)
+            )
+            quantity_change = sum(
+                (parse_decimal(entry.quantity) * natural_entry_sign(account.account_type, entry.direction)
+                 for entry in asset_entries),
+                Decimal(0),
+            )
+            book_change = sum(
+                entry.book_amount_myr * natural_entry_sign(account.account_type, entry.direction)
+                for entry in asset_entries
+            )
+            running_quantities[current_asset_id] += quantity_change
+            running_books[current_asset_id] += book_change
+
+            if not matches_event_filters or (asset_id is not None and current_asset_id != asset_id):
+                continue
+
+            rows.append(
+                (
+                    (event.occurred_at, event.created_at, event.id, current_asset_id),
+                    {
+                        "event_id": event.id,
+                        "event_type": event.event_type,
+                        "event_status": event.status,
+                        "occurred_at": event.occurred_at,
+                        "time_precision": event.time_precision,
+                        "description": event.description,
+                        "category": event.category,
+                        "source": event.source,
+                        "reverses_event_id": event.reverses_event_id,
+                        "reversed_by_event_id": event.reversed_by_event_id,
+                        "asset_id": current_asset_id,
+                        "asset_symbol": asset.symbol,
+                        "quantity_change": canonical_decimal(quantity_change),
+                        "book_amount_myr_change": micros_to_myr(book_change),
+                        "balance_after_quantity": canonical_decimal(running_quantities[current_asset_id]),
+                        "balance_after_book_amount_myr": micros_to_myr(running_books[current_asset_id]),
+                        "entry_count": len(asset_entries),
+                        "counterparties": counterparty_rows,
+                        "receipt_attached": event.receipt is not None,
+                    },
+                )
+            )
+
+    return [row for _, row in sorted(rows, key=lambda item: item[0], reverse=True)]
 
 
 def report_totals(session: Session, start: str | None = None, end: str | None = None) -> dict[str, int]:
