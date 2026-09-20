@@ -9,7 +9,7 @@
 - [x] P1-2：验证 linked card settlement
 - [x] P1-3：由服务器控制退款与 reward rate
 - [x] P1-5：支持多腿卡片表单
-- [ ] 完整回归、真实数据库审计基线与最终工作树检查
+- [x] 完整回归、真实数据库审计基线与最终工作树检查
 
 ## 约束
 
@@ -29,3 +29,5 @@
 - P1-3：后端 Ruff 与 6 个卡片测试通过；退款总额、状态重算、退款撤销、expense account 派生及 reward rate 冲突校验均覆盖。
 - P1-5：卡片前端 4 个工作流测试、TypeScript、Lint、Prettier 通过；前端串行全量 45 个测试通过；Vite 生产构建在系统临时目录通过。后端卡片测试扩展为 7 个，覆盖两资金腿、两退款腿和多费用。
 - 全量回归记录：后端 `37 passed, 1 failed`，唯一失败是既有 `test_recurring_expense_list_summary_and_validation` 的固定日期 overdue 断言（当前日期导致 `1` vs 预期 `0`）；前端默认并行模式有 2 个既有 App 初始化测试受共享状态影响，串行模式为 `45 passed`。
+- 修复后真实库只读审计：after JSON 仍为 4 条既有记录，规则与 event IDs 与 before JSON 完全一致（AUD-01=1、AUD-03=1、AUD-04=2）；本轮未修改真实账务数据。
+- 最终提交前工作树检查：任务范围内改动均已提交；保留任务开始前已有的未跟踪文档、根 `node_modules/`、根 `package-lock.json` 和 `开发规划.md`。
