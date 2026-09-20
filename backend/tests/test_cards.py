@@ -439,3 +439,100 @@ def test_separate_fee_is_added_once_to_economic_cost(client: TestClient) -> None
     assert cost["gross_economic_cost_myr"] == "102"
     assert cost["total_leakage_myr"] == "2"
     assert client.get("/api/reports/fees").json()["total_myr"] == "2"
+
+
+def test_settlement_and_refund_support_multiple_legs_and_fees(client: TestClient) -> None:
+    assets, accounts = setup_card_ledger(client)
+    response = client.post(
+        "/api/cards/settlements",
+        json={
+            "provider": "Bitget",
+            "provider_account_id": "card-multi-leg",
+            "external_id": "settlement-multi-leg",
+            "card_account_id": accounts["Crypto Wallet"]["id"],
+            "merchant_name": "Multi-leg dinner",
+            "merchant_country": "MY",
+            "merchant_asset_id": assets["MYR"]["id"],
+            "merchant_amount": "100",
+            "billing_asset_id": assets["MYR"]["id"],
+            "billing_amount": "100",
+            "merchant_value_myr": "100",
+            "expense_account_id": accounts["General Expense"]["id"],
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "EXPENSE" and category["name"] == "Food"
+            ),
+            "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
+            "funding_legs": [
+                {
+                    "account_id": accounts["Crypto Wallet"]["id"],
+                    "asset_id": assets["USDT"]["id"],
+                    "quantity": "10",
+                    "transaction_value_myr": "42",
+                    "reference_value_myr": "50",
+                },
+                {
+                    "account_id": accounts["Crypto Wallet"]["id"],
+                    "asset_id": assets["USDT"]["id"],
+                    "quantity": "13.96",
+                    "transaction_value_myr": "59",
+                    "reference_value_myr": "51.83",
+                },
+            ],
+            "fees": [
+                {
+                    "component_type": "CRYPTO_CONVERSION_FEE",
+                    "asset_id": assets["USDT"]["id"],
+                    "amount": "0.21",
+                    "value_myr": "0.89",
+                    "accounting_treatment": "EXPENSED",
+                    "included_in_funding_amount": True,
+                    "expense_account_id": accounts["Trading Fees"]["id"],
+                },
+                {
+                    "component_type": "CARD_NETWORK_FEE",
+                    "asset_id": assets["USDT"]["id"],
+                    "amount": "0.02",
+                    "value_myr": "0.11",
+                    "accounting_treatment": "EXPENSED",
+                    "included_in_funding_amount": True,
+                    "expense_account_id": accounts["Trading Fees"]["id"],
+                },
+            ],
+            "settled_at": "2026-08-10T00:00:00Z",
+        },
+    )
+    assert response.status_code == 201, response.text
+    purchase = response.json()
+    cost = client.get("/api/reports/card-costs").json()[0]
+    assert len(cost["funding_legs"]) == 2
+    assert len(cost["fees"]) == 2
+
+    refund = client.post(
+        f"/api/cards/{purchase['id']}/refunds",
+        json={
+            "external_id": "refund-multi-leg",
+            "refund_legs": [
+                {
+                    "account_id": accounts["Crypto Wallet"]["id"],
+                    "asset_id": assets["USD"]["id"],
+                    "quantity": "9.4",
+                    "transaction_value_myr": "40",
+                    "reference_value_myr": "39.95",
+                },
+                {
+                    "account_id": accounts["Bank"]["id"],
+                    "asset_id": assets["MYR"]["id"],
+                    "quantity": "60",
+                    "transaction_value_myr": "60",
+                    "reference_value_myr": "59.95",
+                },
+            ],
+            "refunded_at": "2026-08-11T00:00:00Z",
+        },
+    )
+    assert refund.status_code == 201, refund.text
+    restored = next(card for card in client.get("/api/cards").json() if card["id"] == purchase["id"])
+    assert restored["status"] == "REFUNDED"
+    assert restored["refunded_value_myr"] == "100"

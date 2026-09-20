@@ -8,7 +8,7 @@
 - [x] P1-1：封闭通用记账旁路并统一估值派生
 - [x] P1-2：验证 linked card settlement
 - [x] P1-3：由服务器控制退款与 reward rate
-- [ ] P1-5：支持多腿卡片表单
+- [x] P1-5：支持多腿卡片表单
 - [ ] 完整回归、真实数据库审计基线与最终工作树检查
 
 ## 约束
@@ -27,3 +27,5 @@
 - P1-1：后端 Ruff 与 11 个相关后端测试通过；前端 lint、手工录入 3 个测试和 TypeScript 检查通过。
 - P1-2：后端 Ruff 通过；卡片授权 hold 与 linked settlement 身份/最终结算零副作用测试通过（2 个测试）。
 - P1-3：后端 Ruff 与 6 个卡片测试通过；退款总额、状态重算、退款撤销、expense account 派生及 reward rate 冲突校验均覆盖。
+- P1-5：卡片前端 4 个工作流测试、TypeScript、Lint、Prettier 通过；前端串行全量 45 个测试通过；Vite 生产构建在系统临时目录通过。后端卡片测试扩展为 7 个，覆盖两资金腿、两退款腿和多费用。
+- 全量回归记录：后端 `37 passed, 1 failed`，唯一失败是既有 `test_recurring_expense_list_summary_and_validation` 的固定日期 overdue 断言（当前日期导致 `1` vs 预期 `0`）；前端默认并行模式有 2 个既有 App 初始化测试受共享状态影响，串行模式为 `45 passed`。
