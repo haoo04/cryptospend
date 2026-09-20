@@ -55,7 +55,7 @@ def authorize(client: TestClient, assets: dict[str, dict], accounts: dict[str, d
     return response.json()
 
 
-def settle(
+def settlement_payload(
     client: TestClient, assets: dict[str, dict], accounts: dict[str, dict], authorization_id: str
 ) -> dict:
     expense_category_id = next(
@@ -63,50 +63,59 @@ def settle(
         for category in client.get("/api/categories").json()
         if category["kind"] == "EXPENSE" and category["name"] == "Food"
     )
-    response = client.post(
-        "/api/cards/settlements",
-        json={
-            "authorization_id": authorization_id,
-            "provider": "Bybit",
-            "provider_account_id": "card-main",
-            "external_id": "settlement-1",
-            "card_account_id": accounts["Crypto Wallet"]["id"],
-            "merchant_name": "Dinner",
-            "merchant_country": "MY",
-            "merchant_asset_id": assets["MYR"]["id"],
-            "merchant_amount": "100",
-            "billing_asset_id": assets["USD"]["id"],
-            "billing_amount": "23.70",
-            "merchant_value_myr": "100",
-            "reference_fx_rate": "4.25",
-            "expense_account_id": accounts["General Expense"]["id"],
-            "category_id": expense_category_id,
-            "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
-            "funding_legs": [
-                {
-                    "account_id": accounts["Crypto Wallet"]["id"],
-                    "asset_id": assets["USDT"]["id"],
-                    "quantity": "23.96",
-                    "transaction_value_myr": "100.89",
-                    "reference_value_myr": "101.83",
-                    "actual_conversion_rate": "4.21076794657763",
-                }
-            ],
-            "fees": [
-                {
-                    "component_type": "CRYPTO_CONVERSION_FEE",
-                    "asset_id": assets["USDT"]["id"],
-                    "amount": "0.21",
-                    "value_myr": "0.89",
-                    "accounting_treatment": "EXPENSED",
-                    "included_in_funding_amount": True,
-                    "expense_account_id": accounts["Trading Fees"]["id"],
-                }
-            ],
-            "settled_at": "2026-08-06T12:00:00Z",
-            "final_capture": True,
-        },
-    )
+    return {
+        "authorization_id": authorization_id,
+        "provider": "Bybit",
+        "provider_account_id": "card-main",
+        "external_id": "settlement-1",
+        "card_account_id": accounts["Crypto Wallet"]["id"],
+        "merchant_name": "Dinner",
+        "merchant_country": "MY",
+        "merchant_asset_id": assets["MYR"]["id"],
+        "merchant_amount": "100",
+        "billing_asset_id": assets["USD"]["id"],
+        "billing_amount": "23.70",
+        "merchant_value_myr": "100",
+        "reference_fx_rate": "4.25",
+        "expense_account_id": accounts["General Expense"]["id"],
+        "category_id": expense_category_id,
+        "gain_loss_account_id": accounts["Realized Gain/Loss"]["id"],
+        "funding_legs": [
+            {
+                "account_id": accounts["Crypto Wallet"]["id"],
+                "asset_id": assets["USDT"]["id"],
+                "quantity": "23.96",
+                "transaction_value_myr": "100.89",
+                "reference_value_myr": "101.83",
+                "actual_conversion_rate": "4.21076794657763",
+            }
+        ],
+        "fees": [
+            {
+                "component_type": "CRYPTO_CONVERSION_FEE",
+                "asset_id": assets["USDT"]["id"],
+                "amount": "0.21",
+                "value_myr": "0.89",
+                "accounting_treatment": "EXPENSED",
+                "included_in_funding_amount": True,
+                "expense_account_id": accounts["Trading Fees"]["id"],
+            }
+        ],
+        "settled_at": "2026-08-06T12:00:00Z",
+        "final_capture": True,
+    }
+
+
+def settle(
+    client: TestClient,
+    assets: dict[str, dict],
+    accounts: dict[str, dict],
+    authorization_id: str,
+    overrides: dict | None = None,
+) -> dict:
+    payload = settlement_payload(client, assets, accounts, authorization_id)
+    payload.update(overrides or {})
+    response = client.post("/api/cards/settlements", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -128,6 +137,39 @@ def test_authorization_hold_changes_available_not_book_balance(client: TestClien
     available = next(balance for balance in wallet["available_balances"] if balance["asset_symbol"] == "USDT")
     assert available["quantity"] == "100"
     assert len(client.get("/api/events").json()) == 1
+
+
+def test_linked_settlement_validates_identity_and_final_capture_before_side_effects(client: TestClient) -> None:
+    assets, accounts = setup_card_ledger(client)
+    authorization = authorize(client, assets, accounts, "authorization-integrity")
+    before_events = client.get("/api/events").json()
+
+    mismatch_payload = settlement_payload(client, assets, accounts, authorization["id"])
+    mismatch_payload["merchant_name"] = "Different merchant"
+    mismatch = client.post("/api/cards/settlements", json=mismatch_payload)
+    assert mismatch.status_code == 409
+    assert "merchant_name" in mismatch.json()["detail"]
+
+    cards = client.get("/api/cards").json()
+    assert len(cards) == 1
+    assert next(card for card in cards if card["id"] == authorization["id"])["status"] == "AUTHORIZED"
+    assert client.get("/api/events").json() == before_events
+
+    not_final_payload = settlement_payload(client, assets, accounts, authorization["id"])
+    not_final_payload.update({"external_id": "settlement-not-final", "final_capture": False})
+    not_final = client.post("/api/cards/settlements", json=not_final_payload)
+    assert not_final.status_code == 409
+    assert "final capture" in not_final.json()["detail"]
+    assert client.get("/api/events").json() == before_events
+
+    settlement = settle(client, assets, accounts, authorization["id"])
+    duplicate_payload = settlement_payload(client, assets, accounts, authorization["id"])
+    duplicate_payload["external_id"] = "settlement-duplicate"
+    duplicate = client.post("/api/cards/settlements", json=duplicate_payload)
+    assert duplicate.status_code == 409
+    assert "cannot accept" in duplicate.json()["detail"]
+    assert len([card for card in client.get("/api/cards").json() if card["transaction_type"] == "PURCHASE"]) == 1
+    assert settlement["status"] == "SETTLED"
 
 
 def test_settlement_refund_and_credited_cashback_are_independent(client: TestClient) -> None:

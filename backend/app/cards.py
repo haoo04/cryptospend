@@ -101,6 +101,35 @@ def assert_external_id_available(
         raise DomainError("card external record already exists", 409)
 
 
+def normalize_merchant_name(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def assert_authorization_identity(
+    authorization: CardTransaction, command: CardSettlementCreate
+) -> None:
+    identity = (
+        ("provider", command.provider.strip().upper(), authorization.provider.strip().upper()),
+        ("provider_account_id", command.provider_account_id, authorization.provider_account_id),
+        ("card_account_id", command.card_account_id, authorization.card_account_id),
+        (
+            "merchant_name",
+            normalize_merchant_name(command.merchant_name),
+            normalize_merchant_name(authorization.merchant_name),
+        ),
+        (
+            "merchant_country",
+            command.merchant_country.strip().upper() if command.merchant_country else None,
+            authorization.merchant_country.strip().upper() if authorization.merchant_country else None,
+        ),
+        ("merchant_asset_id", command.merchant_asset_id, authorization.merchant_asset_id),
+        ("billing_asset_id", command.billing_asset_id, authorization.billing_asset_id),
+    )
+    for field, settlement_value, authorization_value in identity:
+        if settlement_value != authorization_value:
+            raise DomainError(f"linked settlement {field} does not match authorization", 409)
+
+
 def create_authorization(session: Session, command: CardAuthorizationCreate) -> CardTransaction:
     require_asset_account(session, command.card_account_id)
     require_asset_account(session, command.hold_account_id)
@@ -175,11 +204,25 @@ def allocation_basis(allocations: list[LotAllocation]) -> int:
 
 def create_settlement(session: Session, command: CardSettlementCreate) -> CardTransaction:
     authorization = get_card(session, command.authorization_id) if command.authorization_id else None
-    if authorization and (
-        authorization.transaction_type != "AUTHORIZATION"
-        or authorization.status not in {CardStatus.AUTHORIZED.value, CardStatus.PARTIALLY_SETTLED.value}
-    ):
-        raise DomainError("authorization cannot accept a settlement", 409)
+    if authorization:
+        if authorization.transaction_type != "AUTHORIZATION":
+            raise DomainError("settlement authorization_id must reference an authorization", 409)
+        if authorization.status == CardStatus.PARTIALLY_SETTLED.value:
+            raise DomainError("authorization is PARTIALLY_SETTLED; run integrity audit before capture", 409)
+        if authorization.status != CardStatus.AUTHORIZED.value:
+            raise DomainError("authorization cannot accept a settlement", 409)
+        if not command.final_capture:
+            raise DomainError("linked settlement must be a final capture", 409)
+        assert_authorization_identity(authorization, command)
+        existing_purchase = session.scalar(
+            select(CardTransaction.id).where(
+                CardTransaction.parent_card_transaction_id == authorization.id,
+                CardTransaction.transaction_type == "PURCHASE",
+                CardTransaction.reversed.is_(False),
+            )
+        )
+        if existing_purchase:
+            raise DomainError("authorization already has an active purchase", 409)
     require_asset_account(session, command.card_account_id)
     expense_account = session.get(Account, command.expense_account_id)
     if expense_account is None or expense_account.account_type != AccountType.EXPENSE.value:
@@ -392,9 +435,7 @@ def create_settlement(session: Session, command: CardSettlementCreate) -> CardTr
             )
         )
     if authorization:
-        authorization.status = (
-            CardStatus.SETTLED.value if command.final_capture else CardStatus.PARTIALLY_SETTLED.value
-        )
+        authorization.status = CardStatus.SETTLED.value
         hold = session.scalar(select(CardHold).where(CardHold.card_transaction_id == authorization.id))
         if hold and command.final_capture:
             hold.status = "RELEASED"
