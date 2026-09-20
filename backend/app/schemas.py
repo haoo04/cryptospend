@@ -14,6 +14,14 @@ from app.enums import (
 )
 from app.money import canonical_decimal, parse_decimal
 
+MANUAL_EVENT_TYPES = {
+    EventType.OPENING_BALANCE,
+    EventType.SALARY,
+    EventType.INCOME,
+    EventType.EXPENSE,
+    EventType.ADJUSTMENT,
+}
+
 
 def clean_category_name(value: str) -> str:
     cleaned = " ".join(value.strip().split())
@@ -299,9 +307,16 @@ class ManualEventCreate(BaseModel):
         if value is None:
             return None
         normalized = canonical_decimal(value)
-        if parse_decimal(normalized) < 0:
-            raise ValueError("amounts must be non-negative")
+        if parse_decimal(normalized) <= 0:
+            raise ValueError("amounts must be positive")
         return normalized
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: EventType) -> EventType:
+        if value not in MANUAL_EVENT_TYPES:
+            raise ValueError("manual event type must use a dedicated workflow")
+        return value
 
 
 class ReverseCreate(BaseModel):
@@ -637,20 +652,9 @@ class CardRefundLegCreate(BaseModel):
 
 class CardRefundCreate(BaseModel):
     external_id: str | None = Field(default=None, max_length=200)
-    refund_value_myr: str
-    expense_account_id: str
     refund_legs: list[CardRefundLegCreate] = Field(min_length=1)
     refunded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    full_refund: bool = False
     description: str = Field(default="", max_length=500)
-
-    @field_validator("refund_value_myr")
-    @classmethod
-    def validate_refund_value(cls, value: str) -> str:
-        normalized = canonical_decimal(value)
-        if parse_decimal(normalized) <= 0:
-            raise ValueError("refund value must be positive")
-        return normalized
 
 
 class RewardCreate(BaseModel):
@@ -674,13 +678,15 @@ class RewardCreditCreate(BaseModel):
     income_account_id: str
     category_id: str | None = None
     value_myr: str
-    valuation_rate: str
+    valuation_rate: str | None = None
     valuation_source: str = Field(min_length=1, max_length=120)
     credited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("value_myr", "valuation_rate")
     @classmethod
-    def validate_credit_decimal(cls, value: str) -> str:
+    def validate_credit_decimal(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = canonical_decimal(value)
         if parse_decimal(normalized) <= 0:
             raise ValueError("credited values must be positive")

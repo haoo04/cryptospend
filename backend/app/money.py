@@ -1,4 +1,4 @@
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
 
 MYR_MICROS = Decimal("1000000")
 
@@ -31,3 +31,15 @@ def myr_to_micros(value: str | int | Decimal) -> int:
 
 def micros_to_myr(value: int) -> str:
     return canonical_decimal(Decimal(value) / MYR_MICROS)
+
+
+def derive_rate_from_micros(quantity: str | int | Decimal, value_myr_micros: int) -> str:
+    amount = parse_decimal(quantity)
+    if amount <= 0:
+        raise ValueError("quantity must be greater than zero")
+    if value_myr_micros <= 0:
+        raise ValueError("MYR value must be greater than zero")
+    with localcontext() as context:
+        context.prec = 50
+        rate = Decimal(value_myr_micros) / MYR_MICROS / amount
+    return canonical_decimal(rate)

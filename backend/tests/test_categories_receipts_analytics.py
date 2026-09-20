@@ -35,6 +35,7 @@ def manual_event(
         "asset_id": asset_id,
         "quantity": quantity,
         "book_amount_myr": amount,
+        "valuation_source": "test valuation",
     }
     if category_id is not None:
         payload["category_id"] = category_id

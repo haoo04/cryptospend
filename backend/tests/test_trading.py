@@ -43,6 +43,7 @@ def acquire(
         "asset_id": asset_id,
         "quantity": quantity,
         "book_amount_myr": value_myr,
+        "valuation_source": "test valuation",
     }
     if category_id:
         payload["category_id"] = category_id

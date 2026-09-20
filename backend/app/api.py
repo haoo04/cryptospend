@@ -37,10 +37,8 @@ from app.ledger import (
     account_balances,
     add_audit,
     category_kind_for_account_types,
-    create_draft,
     create_manual_event,
     get_event,
-    post_event,
     report_totals,
     reverse_event,
     utc_now_text,
@@ -102,7 +100,6 @@ from app.schemas import (
     ChannelComparisonCreate,
     CostLotRead,
     EventCategoryUpdate,
-    EventDraftCreate,
     EventRead,
     EventSearchPageRead,
     GoogleDriveBackupRead,
@@ -661,6 +658,11 @@ def search_events(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
+@router.post("/events/drafts", include_in_schema=False)
+def removed_draft_event() -> None:
+    raise HTTPException(status_code=404, detail="generic draft events are not supported")
+
+
 @router.get("/events/{event_id}", response_model=EventRead)
 def event_detail(event_id: str, session: Session = Depends(get_session)) -> EventRead:
     return event_read(get_event(session, event_id))
@@ -750,23 +752,9 @@ def delete_event_receipt(event_id: str, session: Session = Depends(get_session))
     return Response(status_code=204)
 
 
-@router.post("/events/drafts", response_model=EventRead, status_code=201)
-def draft_event(payload: EventDraftCreate, session: Session = Depends(get_session)) -> EventRead:
-    event = create_draft(session, payload)
-    session.commit()
-    return event_read(get_event(session, event.id))
-
-
 @router.post("/events/manual", response_model=EventRead, status_code=201)
 def manual_event(payload: ManualEventCreate, session: Session = Depends(get_session)) -> EventRead:
     event = create_manual_event(session, payload)
-    session.commit()
-    return event_read(get_event(session, event.id))
-
-
-@router.post("/events/{event_id}/post", response_model=EventRead)
-def post_draft(event_id: str, session: Session = Depends(get_session)) -> EventRead:
-    event = post_event(session, get_event(session, event_id))
     session.commit()
     return event_read(get_event(session, event.id))
 

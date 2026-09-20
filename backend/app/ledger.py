@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.enums import AccountType, EntryDirection, EventStatus, EventType
 from app.models import Account, Asset, AuditLog, Category, FeeComponent, LedgerEntry, TransactionEvent, utc_now_text
-from app.money import canonical_decimal, micros_to_myr, myr_to_micros, parse_decimal
-from app.schemas import EventDraftCreate, ManualEventCreate
+from app.money import canonical_decimal, derive_rate_from_micros, micros_to_myr, myr_to_micros, parse_decimal
+from app.schemas import MANUAL_EVENT_TYPES, EventDraftCreate, ManualEventCreate
 
 
 class DomainError(Exception):
@@ -35,6 +35,28 @@ REQUIRED_CATEGORY_EVENT_TYPES = {
     EventType.EXPENSE.value,
     EventType.CARD_SETTLEMENT.value,
     EventType.REWARD.value,
+}
+
+MANUAL_ACCOUNT_TYPES = {
+    EventType.SALARY: ({AccountType.ASSET.value}, {AccountType.INCOME.value}),
+    EventType.INCOME: ({AccountType.ASSET.value}, {AccountType.INCOME.value}),
+    EventType.OPENING_BALANCE: ({AccountType.ASSET.value}, {AccountType.EQUITY.value}),
+    EventType.EXPENSE: ({AccountType.EXPENSE.value}, {AccountType.ASSET.value}),
+    EventType.ADJUSTMENT: (
+        {
+            AccountType.ASSET.value,
+            AccountType.EXPENSE.value,
+            AccountType.LIABILITY.value,
+            AccountType.CLEARING.value,
+        },
+        {
+            AccountType.ASSET.value,
+            AccountType.INCOME.value,
+            AccountType.EQUITY.value,
+            AccountType.GAIN_LOSS.value,
+            AccountType.CLEARING.value,
+        },
+    ),
 }
 
 
@@ -161,6 +183,56 @@ def post_event(session: Session, event: TransactionEvent) -> TransactionEvent:
 
 
 def create_manual_event(session: Session, command: ManualEventCreate) -> TransactionEvent:
+    if command.event_type not in MANUAL_EVENT_TYPES:
+        raise DomainError(f"manual {command.event_type.value} is not supported; use its dedicated workflow")
+    if command.debit_account_id == command.credit_account_id:
+        raise DomainError("manual debit and credit accounts must differ")
+    debit_account = session.get(Account, command.debit_account_id)
+    credit_account = session.get(Account, command.credit_account_id)
+    if debit_account is None or credit_account is None:
+        raise DomainError("manual debit and credit accounts must exist")
+    allowed_debit, allowed_credit = MANUAL_ACCOUNT_TYPES[command.event_type]
+    if debit_account.account_type not in allowed_debit or credit_account.account_type not in allowed_credit:
+        if command.event_type == EventType.SALARY or command.event_type == EventType.INCOME:
+            raise DomainError("manual SALARY/INCOME requires ASSET debit and INCOME credit")
+        if command.event_type == EventType.EXPENSE:
+            raise DomainError("manual EXPENSE requires EXPENSE debit and ASSET credit")
+        if command.event_type == EventType.OPENING_BALANCE:
+            raise DomainError("manual OPENING_BALANCE requires ASSET debit and EQUITY credit")
+        raise DomainError("manual ADJUSTMENT account types are not allowed")
+
+    asset = session.get(Asset, command.asset_id)
+    if asset is None:
+        raise DomainError("manual asset does not exist")
+    quantity = parse_decimal(command.quantity)
+    book_amount = parse_decimal(command.book_amount_myr)
+    if quantity <= 0 or book_amount <= 0:
+        raise DomainError("manual quantity and book amount must be positive")
+
+    is_myr = asset.symbol == "MYR" and asset.chain is None
+    if is_myr:
+        if quantity != book_amount:
+            raise DomainError("MYR quantity must equal book amount")
+        valuation_rate = None
+        valuation_source = None
+    else:
+        if command.event_type == EventType.EXPENSE:
+            raise DomainError("non-MYR EXPENSE requires a disposal-aware flow")
+        if command.event_type == EventType.ADJUSTMENT:
+            raise DomainError("non-MYR ADJUSTMENT is not supported")
+        valuation_source = (command.valuation_source or "").strip()
+        if not valuation_source:
+            raise DomainError("non-MYR manual acquisition requires valuation_source")
+        book_micros = myr_to_micros(command.book_amount_myr)
+        try:
+            valuation_rate = derive_rate_from_micros(command.quantity, book_micros)
+            if command.valuation_rate is not None:
+                supplied_rate = parse_decimal(command.valuation_rate)
+                if supplied_rate <= 0 or myr_to_micros(quantity * supplied_rate) != book_micros:
+                    raise DomainError("valuation_rate conflicts with quantity and book amount")
+        except ValueError as exc:
+            raise DomainError("valuation_rate must be a finite positive decimal") from exc
+
     draft = EventDraftCreate(
         event_type=command.event_type,
         occurred_at=command.occurred_at,
@@ -174,8 +246,8 @@ def create_manual_event(session: Session, command: ManualEventCreate) -> Transac
                 "direction": EntryDirection.DEBIT,
                 "quantity": command.quantity,
                 "book_amount_myr": command.book_amount_myr,
-                "valuation_rate": command.valuation_rate,
-                "valuation_source": command.valuation_source,
+                "valuation_rate": valuation_rate,
+                "valuation_source": valuation_source,
             },
             {
                 "account_id": command.credit_account_id,
@@ -183,8 +255,8 @@ def create_manual_event(session: Session, command: ManualEventCreate) -> Transac
                 "direction": EntryDirection.CREDIT,
                 "quantity": command.quantity,
                 "book_amount_myr": command.book_amount_myr,
-                "valuation_rate": command.valuation_rate,
-                "valuation_source": command.valuation_source,
+                "valuation_rate": valuation_rate,
+                "valuation_source": valuation_source,
             },
         ],
     )

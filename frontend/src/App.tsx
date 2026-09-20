@@ -1299,7 +1299,6 @@ export function AddTransaction({
   const [asset, setAsset] = useState('')
   const [quantity, setQuantity] = useState('')
   const [bookAmount, setBookAmount] = useState('')
-  const [rate, setRate] = useState('')
   const [rateSource, setRateSource] = useState('Manual')
 
   const allowed = useMemo(() => {
@@ -1326,8 +1325,19 @@ export function AddTransaction({
   const categoryOptions = categories.filter((category) => category.active && category.kind === categoryKind)
   const categoryRequired = ['SALARY', 'INCOME', 'EXPENSE'].includes(eventType)
   const selectedCategoryId = categoryOptions.some((category) => category.id === categoryId) ? categoryId : ''
-  const selectedAsset = assets.find((item) => item.id === asset)
+  const eligibleAssets = useMemo(
+    () => eventType === 'EXPENSE' || eventType === 'ADJUSTMENT'
+      ? assets.filter((item) => item.symbol === 'MYR' && item.chain === null)
+      : assets,
+    [assets, eventType],
+  )
+  const selectedAssetId = eligibleAssets.some((item) => item.id === asset) ? asset : ''
+  const selectedAsset = assets.find((item) => item.id === selectedAssetId)
   const isMyrAsset = selectedAsset?.symbol === 'MYR'
+  const showMyrAmount = isMyrAsset || eventType === 'EXPENSE' || eventType === 'ADJUSTMENT'
+  const derivedRate = selectedAssetId && !isMyrAsset && isPositiveDecimal(quantity) && isPositiveDecimal(bookAmount)
+    ? divideDecimal(bookAmount, quantity, 18)
+    : ''
 
   if (mode === 'TRADE') {
     return (
@@ -1355,11 +1365,10 @@ export function AddTransaction({
       category_id: selectedCategoryId || null,
       debit_account_id: debit,
       credit_account_id: credit,
-      asset_id: asset,
-      quantity: isMyrAsset ? bookAmount : quantity,
+      asset_id: selectedAssetId,
+      quantity: selectedAssetId ? (isMyrAsset ? bookAmount : quantity) : '',
       book_amount_myr: bookAmount,
-      valuation_rate: rate || null,
-      valuation_source: rate ? rateSource : null,
+      valuation_source: !isMyrAsset ? rateSource : null,
     }
     const succeeded = receiptFile ? await onSubmit(payload, receiptFile) : await onSubmit(payload)
     if (!succeeded) return
@@ -1367,7 +1376,6 @@ export function AddTransaction({
     setDescription('')
     setQuantity('')
     setBookAmount('')
-    setRate('')
     setCategoryId('')
     setReceiptFile(null)
   }
@@ -1382,8 +1390,13 @@ export function AddTransaction({
       <form onSubmit={(event) => void submit(event)}>
         <label>
           Event type
-          <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
-            {['SALARY', 'INCOME', 'EXPENSE', 'TRANSFER', 'OPENING_BALANCE', 'ADJUSTMENT'].map((type) => <option key={type}>{type}</option>)}
+            <select value={eventType} onChange={(event) => {
+              setEventType(event.target.value)
+              setAsset('')
+              setQuantity('')
+              setBookAmount('')
+            }}>
+            {['SALARY', 'INCOME', 'EXPENSE', 'OPENING_BALANCE', 'ADJUSTMENT'].map((type) => <option key={type}>{type}</option>)}
           </select>
         </label>
         <label>
@@ -1414,36 +1427,36 @@ export function AddTransaction({
         </label>
         <label>
           Asset
-          <select value={asset} onChange={(event) => setAsset(event.target.value)} required>
+          <select value={selectedAssetId} onChange={(event) => setAsset(event.target.value)} required>
             <option value="">Select asset</option>
-            {assets.map((item) => <option value={item.id} key={item.id}>{item.symbol} · {item.name}</option>)}
+            {eligibleAssets.map((item) => <option value={item.id} key={item.id}>{item.symbol} · {item.name}</option>)}
           </select>
         </label>
-        {isMyrAsset ? (
+        {showMyrAmount ? (
           <label>
             MYR amount
-            <input inputMode="decimal" value={bookAmount} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
+            <input inputMode="decimal" value={selectedAssetId ? bookAmount : ''} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
           </label>
         ) : (
           <>
             <label>
               Original quantity
-              <input inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="1000.00000000" required />
+              <input inputMode="decimal" value={selectedAssetId ? quantity : ''} onChange={(event) => setQuantity(event.target.value)} placeholder="1000.00000000" required />
             </label>
             <label>
               Book amount (MYR)
-              <input inputMode="decimal" value={bookAmount} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
+              <input inputMode="decimal" value={selectedAssetId ? bookAmount : ''} onChange={(event) => setBookAmount(event.target.value)} placeholder="4250.00" required />
             </label>
           </>
         )}
         <label>
-          Asset/MYR rate
-          <input inputMode="decimal" value={rate} onChange={(event) => setRate(event.target.value)} placeholder="4.25" />
-          <small>quote asset / base asset</small>
+          Asset/MYR rate (derived)
+          <input inputMode="decimal" value={derivedRate} readOnly placeholder="Enter quantity and MYR value" />
+          <small>calculated from quantity and book amount; not submitted as an input</small>
         </label>
         <label>
           Rate source
-          <input value={rateSource} onChange={(event) => setRateSource(event.target.value)} disabled={!rate} />
+          <input value={rateSource} onChange={(event) => setRateSource(event.target.value)} disabled={isMyrAsset} required={!isMyrAsset && Boolean(asset)} />
         </label>
         {categoryKind && (
           <label>

@@ -72,4 +72,35 @@ describe('manual MYR transaction entry', () => {
     expect(screen.getByLabelText('Book amount (MYR)')).toBeTruthy()
     expect(screen.queryByLabelText('MYR amount')).toBeNull()
   })
+
+  it('derives the non-MYR rate and omits it from the submitted facts', async () => {
+    const onSubmit = vi.fn(async () => true)
+
+    render(
+      <AddTransaction
+        assets={assets}
+        accounts={accounts}
+        busy={false}
+        onSubmit={onSubmit}
+        onTrade={vi.fn(async () => true)}
+        onTransfer={vi.fn(async () => true)}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Asset'), { target: { value: 'usdt' } })
+    fireEvent.change(screen.getByLabelText('Debit account'), { target: { value: 'asset-account' } })
+    fireEvent.change(screen.getByLabelText('Credit account'), { target: { value: 'income-account' } })
+    fireEvent.change(screen.getByLabelText('Original quantity'), { target: { value: '10' } })
+    fireEvent.change(screen.getByLabelText('Book amount (MYR)'), { target: { value: '42.50' } })
+
+    const derivedRate = screen.getByDisplayValue('4.25') as HTMLInputElement
+    expect(derivedRate.value).toBe('4.25')
+    expect(derivedRate.readOnly).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post balanced event' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    const submitted = (onSubmit.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0]
+    expect(Object.hasOwn(submitted, 'valuation_rate')).toBe(false)
+  })
 })
