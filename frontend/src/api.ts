@@ -111,6 +111,53 @@ export type EventSearchPage = {
   page_size: number
 }
 
+export type AccountLedgerFilters = {
+  q?: string
+  asset_id?: string
+  event_type?: string
+  from_date?: string
+  to_date?: string
+  page?: number
+  page_size?: number
+}
+
+export type AccountLedgerCounterparty = {
+  account_id: string
+  account_name: string
+  account_type: string
+}
+
+export type AccountLedgerItem = {
+  event_id: string
+  event_type: string
+  event_status: string
+  occurred_at: string
+  time_precision: string
+  description: string
+  category: string | null
+  source: string
+  reverses_event_id: string | null
+  reversed_by_event_id: string | null
+  asset_id: string
+  asset_symbol: string
+  quantity_change: string
+  book_amount_myr_change: string
+  balance_after_quantity: string
+  balance_after_book_amount_myr: string
+  entry_count: number
+  counterparties: AccountLedgerCounterparty[]
+  receipt_attached: boolean
+}
+
+export type AccountLedgerPage = {
+  account: Account
+  timezone: string
+  items: AccountLedgerItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export type Summary = {
   net_worth_myr: string
   income_myr: string
@@ -472,6 +519,17 @@ export const api = {
     const suffix = query.toString()
     return request<EventSearchPage>(`/events/search${suffix ? `?${suffix}` : ''}`)
   },
+  accountLedger: (accountId: string, filters: AccountLedgerFilters = {}) => {
+    const query = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value))
+    })
+    const suffix = query.toString()
+    return request<AccountLedgerPage>(
+      `/accounts/${encodeURIComponent(accountId)}/ledger${suffix ? `?${suffix}` : ''}`,
+    )
+  },
+  event: (id: string) => request<TransactionEvent>(`/events/${encodeURIComponent(id)}`),
   summary: () => request<Summary>('/reports/summary'),
   portfolio: (asOf?: string) =>
     request<PortfolioPosition[]>(`/reports/portfolio${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''}`),

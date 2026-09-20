@@ -1958,3 +1958,170 @@ input[readonly] {
     animation: none;
   }
 }
+
+.account-activity-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.account-cards article {
+  display: flex;
+  flex-direction: column;
+}
+
+.account-cards .account-activity-button {
+  margin-top: auto;
+  padding: 14px 0 0;
+  text-align: left;
+}
+
+.account-ledger-page {
+  display: grid;
+  gap: 20px;
+}
+
+.account-ledger-header {
+  display: grid;
+  gap: 20px;
+}
+
+.account-ledger-header .section-title {
+  align-items: flex-start;
+}
+
+.account-ledger-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-ledger-meta {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-ledger-balances {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.account-ledger-balance {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-ledger-balance > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-ledger-balance strong,
+.account-ledger-balance small {
+  display: block;
+}
+
+.account-ledger-balance strong {
+  font-size: 16px;
+}
+
+.account-ledger-balance small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.account-ledger-available {
+  color: var(--green) !important;
+}
+
+.account-ledger-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(110px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.account-ledger-search {
+  min-width: 0;
+}
+
+.account-ledger-table-wrap {
+  margin-top: 0;
+}
+
+.account-ledger-table {
+  min-width: 940px;
+}
+
+.account-ledger-table td > strong,
+.account-ledger-table td > span {
+  display: block;
+}
+
+.account-ledger-table td > span {
+  margin-top: 5px;
+}
+
+.ledger-change {
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-change.positive {
+  color: var(--green);
+}
+
+.ledger-change.negative {
+  color: var(--danger);
+}
+
+.ledger-counterparties {
+  max-width: 180px;
+}
+
+.account-ledger-empty {
+  margin: 20px 0 0;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.account-ledger-error {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .account-ledger-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .account-ledger-search {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .account-ledger-header .section-title,
+  .account-ledger-header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-ledger-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .account-ledger-search {
+    grid-column: auto;
+  }
+}

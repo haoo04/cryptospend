@@ -24,13 +24,14 @@ import type {
 } from './api'
 import CardCenter from './CardCenter'
 import CategoryManager from './CategoryManager'
+import AccountLedger from './AccountLedger'
 import { addDecimal, divideDecimal, isPositiveDecimal, multiplyDecimal, subtractDecimal } from './decimal'
 import { formatMyr, localDateTimeValue } from './format'
 import FixedExpensesCenter from './FixedExpensesCenter'
 import ReportsCenter from './ReportsCenter'
 import './App.css'
 
-type View = 'dashboard' | 'transactions' | 'add' | 'fixed-expenses' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
+type View = 'dashboard' | 'transactions' | 'add' | 'fixed-expenses' | 'accounts' | 'account-ledger' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
 
 type OverviewPeriod =
   | { mode: 'all' }
@@ -169,6 +170,8 @@ function App() {
   const [journeys, setJourneys] = useState<JourneyReport[]>([])
   const [snapshots, setSnapshots] = useState<ReportSnapshot[]>([])
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const [accountLedgerRefreshVersion, setAccountLedgerRefreshVersion] = useState(0)
   const [backupStatus, setBackupStatus] = useState<GoogleDriveBackupStatus>(emptyBackupStatus)
   const [lastBackup, setLastBackup] = useState<GoogleDriveBackupResult | null>(null)
   const [overviewMode, setOverviewMode] = useState<'all' | 'month'>('all')
@@ -371,6 +374,7 @@ function App() {
     setError('')
     try {
       await refresh()
+      setAccountLedgerRefreshVersion((version) => version + 1)
       showNotice('success', 'Data refreshed successfully.')
     } catch (reason) {
       const detail = reasonMessage(reason, 'Unable to refresh CryptoSpend')
@@ -405,6 +409,24 @@ function App() {
 
   function openGoogleDriveConnection() {
     window.open(api.googleDriveConnectUrl(), '_blank', 'noopener,noreferrer')
+  }
+
+  function openAccountLedger(accountId: string) {
+    setSelectedAccountId(accountId)
+    setView('account-ledger')
+  }
+
+  async function inspectEvent(eventId: string) {
+    setBusy(true)
+    try {
+      const event = await api.event(eventId)
+      setSelected(event)
+      setView('transactions')
+    } catch (reason) {
+      showNotice('error', 'Unable to open transaction', reasonMessage(reason, 'Unable to load transaction details'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function loadMonthly(month: string) {
@@ -545,7 +567,7 @@ function App() {
               ['settings', 'Settings'],
             ] as [View, string][]
           ).map(([key, label]) => (
-            <button className={view === key ? 'active' : ''} key={key} onClick={() => setView(key)}>
+            <button className={(key === 'accounts' && view === 'account-ledger') || view === key ? 'active' : ''} key={key} onClick={() => setView(key)}>
               <span className="nav-dot" />
               {label}
             </button>
@@ -561,7 +583,7 @@ function App() {
         <header className="topbar">
           <div>
             <span className="eyebrow">PERSONAL FINANCE / MYR</span>
-            <h1>{view === 'dashboard' ? 'Financial overview' : view === 'fixed-expenses' ? 'Fixed expenses' : view}</h1>
+            <h1>{view === 'dashboard' ? 'Financial overview' : view === 'fixed-expenses' ? 'Fixed expenses' : view === 'account-ledger' ? `${accounts.find((account) => account.id === selectedAccountId)?.name ?? 'Account'} activity` : view}</h1>
           </div>
           <div className="topbar-actions">
             <button className="secondary" onClick={() => void runRefresh()} disabled={loading || busy}>
@@ -595,6 +617,7 @@ function App() {
             feeReport={feeReport}
             accounts={accounts}
             events={events}
+            onOpenAccount={openAccountLedger}
             overviewMode={overviewMode}
             overviewMonth={overviewMonth}
             overviewPeriod={overviewPeriod}
@@ -604,6 +627,19 @@ function App() {
             onSelectMonth={selectMonthlyOverview}
             onChangeMonth={changeOverviewMonth}
             onRetryMonth={() => void loadOverviewMonth(overviewMonth)}
+          />
+        )}
+        {ready && view === 'account-ledger' && selectedAccountId && (
+          <AccountLedger
+            key={selectedAccountId}
+            accountId={selectedAccountId}
+            assets={assets}
+            refreshVersion={accountLedgerRefreshVersion}
+            onBack={() => {
+              setSelectedAccountId(null)
+              setView('accounts')
+            }}
+            onInspectEvent={inspectEvent}
           />
         )}
         {ready && view === 'transactions' && (
@@ -773,6 +809,7 @@ function App() {
             assets={assets}
             accounts={accounts}
             busy={busy}
+            onOpenAccount={openAccountLedger}
             onCreateAccount={(payload) => runAction(
               () => api.createAccount(payload),
               { success: 'Account created successfully.', failure: 'Unable to create account' },
@@ -803,6 +840,7 @@ function Dashboard({
   feeReport,
   accounts,
   events,
+  onOpenAccount,
   overviewMode,
   overviewMonth,
   overviewPeriod,
@@ -817,6 +855,7 @@ function Dashboard({
   feeReport: FeeReport
   accounts: Account[]
   events: TransactionEvent[]
+  onOpenAccount: (accountId: string) => void
   overviewMode: 'all' | 'month'
   overviewMonth: string
   overviewPeriod: OverviewPeriod
@@ -931,6 +970,9 @@ function Dashboard({
                     <span className="muted">No balance</span>
                   )}
                 </div>
+                <button type="button" className="text-button account-activity-button" onClick={() => onOpenAccount(account.id)} aria-label={`View activity for ${account.name}`}>
+                  View activity
+                </button>
               </div>
             ))}
           </div>
@@ -1933,10 +1975,11 @@ function Portfolio({ positions, feeReport, assets, busy, onRate }: {
   )
 }
 
-function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
+function Accounts({ assets, accounts, busy, onOpenAccount, onCreateAccount, onCreateAsset }: {
   assets: Asset[]
   accounts: Account[]
   busy: boolean
+  onOpenAccount: (accountId: string) => void
   onCreateAccount: (payload: {
     name: string
     account_type: string
@@ -1981,6 +2024,9 @@ function Accounts({ assets, accounts, busy, onCreateAccount, onCreateAsset }: {
                 ))}
                 {!account.balances.length && <span className="muted">No posted balance</span>}
               </div>
+              <button type="button" className="text-button account-activity-button" onClick={() => onOpenAccount(account.id)} aria-label={`View activity for ${account.name}`}>
+                View activity
+              </button>
             </article>
           ))}
         </div>
