@@ -32,6 +32,10 @@ import './App.css'
 
 type View = 'dashboard' | 'transactions' | 'add' | 'fixed-expenses' | 'accounts' | 'portfolio' | 'cards' | 'reports' | 'categories' | 'settings'
 
+type OverviewPeriod =
+  | { mode: 'all' }
+  | { mode: 'month'; report: MonthlyReport }
+
 const transactionEventTypes = [
   'OPENING_BALANCE',
   'SALARY',
@@ -167,11 +171,18 @@ function App() {
   const [selected, setSelected] = useState<TransactionEvent | null>(null)
   const [backupStatus, setBackupStatus] = useState<GoogleDriveBackupStatus>(emptyBackupStatus)
   const [lastBackup, setLastBackup] = useState<GoogleDriveBackupResult | null>(null)
+  const [overviewMode, setOverviewMode] = useState<'all' | 'month'>('all')
+  const [overviewMonth, setOverviewMonth] = useState(reportingMonth)
+  const [overviewPeriod, setOverviewPeriod] = useState<OverviewPeriod>({ mode: 'all' })
+  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [overviewError, setOverviewError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<FeedbackNotice | null>(null)
   const noticeId = useRef(0)
+  const overviewRequestId = useRef(0)
+  const overviewAppliedMonth = useRef<string | null>(null)
 
   const showNotice = useCallback((kind: FeedbackNotice['kind'], title: string, message?: string) => {
     noticeId.current += 1
@@ -182,8 +193,36 @@ function App() {
     setNotice((current) => current?.id === id ? null : current)
   }, [])
 
+  const loadOverviewMonth = useCallback(async (month: string) => {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return
+
+    const requestId = ++overviewRequestId.current
+    setOverviewLoading(true)
+    setOverviewError('')
+    try {
+      const report = await api.monthly(month)
+      if (requestId !== overviewRequestId.current) return
+      overviewAppliedMonth.current = report.month
+      setOverviewPeriod({ mode: 'month', report })
+    } catch (reason) {
+      if (requestId === overviewRequestId.current) {
+        setOverviewError(reasonMessage(reason, 'Unable to load Overview period'))
+      }
+    } finally {
+      if (requestId === overviewRequestId.current) setOverviewLoading(false)
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
+      const reportsMonth = reportingMonth()
+      const overviewMonthToRefresh = overviewAppliedMonth.current
+      const reportsMonthlyRequest = api.monthly(reportsMonth)
+      const overviewMonthlyRequest = overviewMonthToRefresh
+        ? overviewMonthToRefresh === reportsMonth
+          ? reportsMonthlyRequest
+          : api.monthly(overviewMonthToRefresh)
+        : Promise.resolve(null)
       const [
         nextAssets,
         nextAccounts,
@@ -196,6 +235,7 @@ function App() {
         nextCards,
         nextCardCosts,
         nextMonthly,
+        nextOverviewMonthly,
         nextJourneys,
         nextSnapshots,
       ] = await Promise.all([
@@ -209,7 +249,8 @@ function App() {
         api.fees(),
         api.cards(),
         api.cardCosts(),
-        api.monthly(reportingMonth()),
+        reportsMonthlyRequest,
+        overviewMonthlyRequest,
         api.journeys(),
         api.snapshots(),
       ])
@@ -224,6 +265,9 @@ function App() {
       setCards(nextCards)
       setCardCosts(nextCardCosts)
       setMonthly(nextMonthly)
+      if (nextOverviewMonthly && overviewAppliedMonth.current === overviewMonthToRefresh) {
+        setOverviewPeriod({ mode: 'month', report: nextOverviewMonthly })
+      }
       setJourneys(nextJourneys)
       setSnapshots(nextSnapshots)
       setSelected((current) => (current ? nextEvents.find((event) => event.id === current.id) ?? current : null))
@@ -254,6 +298,10 @@ function App() {
     const timer = window.setTimeout(() => void refreshBackupStatus(), 0)
     return () => window.clearTimeout(timer)
   }, [refreshBackupStatus])
+
+  useEffect(() => () => {
+    overviewRequestId.current += 1
+  }, [])
 
   async function runAction(
     action: () => Promise<unknown>,
@@ -369,6 +417,25 @@ function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function selectAllTimeOverview() {
+    overviewRequestId.current += 1
+    overviewAppliedMonth.current = null
+    setOverviewMode('all')
+    setOverviewPeriod({ mode: 'all' })
+    setOverviewLoading(false)
+    setOverviewError('')
+  }
+
+  function selectMonthlyOverview() {
+    setOverviewMode('month')
+    void loadOverviewMonth(overviewMonth)
+  }
+
+  function changeOverviewMonth(month: string) {
+    setOverviewMonth(month)
+    void loadOverviewMonth(month)
   }
 
   const loadAnalytics = useCallback(async (period: AnalyticsReport['period'], anchor: string) => {
@@ -523,7 +590,21 @@ function App() {
         )}
 
         {ready && view === 'dashboard' && (
-          <Dashboard summary={summary} feeReport={feeReport} accounts={accounts} events={events} />
+          <Dashboard
+            summary={summary}
+            feeReport={feeReport}
+            accounts={accounts}
+            events={events}
+            overviewMode={overviewMode}
+            overviewMonth={overviewMonth}
+            overviewPeriod={overviewPeriod}
+            overviewLoading={overviewLoading}
+            overviewError={overviewError}
+            onSelectAllTime={selectAllTimeOverview}
+            onSelectMonth={selectMonthlyOverview}
+            onChangeMonth={changeOverviewMonth}
+            onRetryMonth={() => void loadOverviewMonth(overviewMonth)}
+          />
         )}
         {ready && view === 'transactions' && (
           <Transactions
@@ -717,20 +798,111 @@ function App() {
   )
 }
 
-function Dashboard({ summary, feeReport, accounts, events }: {
+function Dashboard({
+  summary,
+  feeReport,
+  accounts,
+  events,
+  overviewMode,
+  overviewMonth,
+  overviewPeriod,
+  overviewLoading,
+  overviewError,
+  onSelectAllTime,
+  onSelectMonth,
+  onChangeMonth,
+  onRetryMonth,
+}: {
   summary: Summary
   feeReport: FeeReport
   accounts: Account[]
   events: TransactionEvent[]
+  overviewMode: 'all' | 'month'
+  overviewMonth: string
+  overviewPeriod: OverviewPeriod
+  overviewLoading: boolean
+  overviewError: string
+  onSelectAllTime: () => void
+  onSelectMonth: () => void
+  onChangeMonth: (month: string) => void
+  onRetryMonth: () => void
 }) {
   const assetAccounts = accounts.filter((account) => account.account_type === 'ASSET')
+  const displayedSummary = overviewPeriod.mode === 'month' ? overviewPeriod.report.summary : summary
+  const displayedFees = overviewPeriod.mode === 'month' ? overviewPeriod.report.fees : feeReport
+  const periodLabel = overviewPeriod.mode === 'month'
+    ? `${new Date(`${overviewPeriod.report.month}-01T00:00:00Z`).toLocaleDateString('en', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    })} · ${overviewPeriod.report.timezone}`
+    : 'All posted records'
+  const flowNote = overviewPeriod.mode === 'month' ? 'During selected month' : 'All posted records'
+
   return (
     <div className="stack">
+      <section className="overview-period panel" aria-labelledby="overview-period-title">
+        <div>
+          <span className="eyebrow" id="overview-period-title">OVERVIEW PERIOD</span>
+          <p className="overview-period-status" aria-live="polite">
+            {periodLabel}{overviewLoading && ' · Updating…'}
+          </p>
+        </div>
+        <div className="overview-period-controls">
+          <div className="overview-period-toggle" role="group" aria-label="Overview period">
+            <button
+              type="button"
+              className={overviewMode === 'all' ? 'active' : ''}
+              aria-pressed={overviewMode === 'all'}
+              disabled={overviewLoading}
+              onClick={onSelectAllTime}
+            >
+              All time
+            </button>
+            <button
+              type="button"
+              className={overviewMode === 'month' ? 'active' : ''}
+              aria-pressed={overviewMode === 'month'}
+              disabled={overviewLoading}
+              onClick={onSelectMonth}
+            >
+              Month
+            </button>
+          </div>
+          {overviewMode === 'month' && (
+            <label className="overview-month-field">
+              <span>Month</span>
+              <input
+                type="month"
+                aria-label="Overview month"
+                value={overviewMonth}
+                disabled={overviewLoading}
+                onChange={(event) => onChangeMonth(event.target.value)}
+              />
+            </label>
+          )}
+        </div>
+        {overviewError && (
+          <div className="overview-period-error" role="alert">
+            <span>{overviewError}</span>
+            <button type="button" className="secondary" disabled={overviewLoading} onClick={onRetryMonth}>
+              Retry
+            </button>
+          </div>
+        )}
+      </section>
       <section className="metric-grid">
-        <Metric label="Net worth (book)" value={formatMyr(summary.net_worth_myr)} accent />
-        <Metric label="Income" value={formatMyr(summary.income_myr)} />
-        <Metric label="Gross spending" value={formatMyr(summary.gross_spending_myr)} />
-        <Metric label="Explicit fees" value={formatMyr(feeReport.total_myr)} />
+        <Metric
+          label="Net worth (book)"
+          value={formatMyr(displayedSummary.net_worth_myr)}
+          note={overviewPeriod.mode === 'month' ? 'As of month end' : 'All posted records'}
+          accent
+        />
+        <Metric label="Income" value={formatMyr(displayedSummary.income_myr)} note={flowNote} />
+        <Metric label="Expenses" value={formatMyr(displayedSummary.expense_myr)} note={flowNote} />
+        <Metric label="Gross spending" value={formatMyr(displayedSummary.gross_spending_myr)} note={flowNote} />
+        <Metric label="Net spending" value={formatMyr(displayedSummary.net_spending_myr)} note={flowNote} />
+        <Metric label="Explicit fees" value={formatMyr(displayedFees.total_myr)} note={flowNote} />
       </section>
       <section className="dashboard-grid">
         <div className="panel">
@@ -789,12 +961,12 @@ function Dashboard({ summary, feeReport, accounts, events }: {
   )
 }
 
-function Metric({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+function Metric({ label, value, note, accent = false }: { label: string; value: string; note: string; accent?: boolean }) {
   return (
     <div className={`metric ${accent ? 'accent' : ''}`}>
       <span>{label}</span>
       <strong>{value}</strong>
-      <small>Authoritative ledger value</small>
+      <small>{note}</small>
     </div>
   )
 }

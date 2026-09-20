@@ -188,6 +188,80 @@ h3 {
   gap: 20px;
 }
 
+.overview-period {
+  padding: 18px 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 20px;
+}
+
+.overview-period-status {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.overview-period-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.overview-period-toggle {
+  padding: 3px;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f4f7f3;
+}
+
+.overview-period-toggle button {
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 12px;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 700;
+}
+
+.overview-period-toggle button.active {
+  color: white;
+  background: var(--green);
+}
+
+.overview-month-field {
+  min-width: 155px;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.overview-month-field input {
+  min-height: 36px;
+  padding: 6px 9px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.overview-period-error {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.overview-period-error button {
+  padding: 6px 10px;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -1322,6 +1396,19 @@ input[readonly] {
   .comparison-path,
   .transaction-filters {
     grid-template-columns: 1fr;
+  }
+
+  .overview-period {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-period-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .overview-period-toggle button {
+    flex: 1;
   }
 
   .transaction-search {
