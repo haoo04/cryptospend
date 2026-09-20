@@ -154,14 +154,21 @@ export type CardRecord = {
   parent_card_transaction_id: string | null
   original_transaction_id: string | null
   provider: string
+  provider_account_id: string
   external_id: string | null
   transaction_type: 'AUTHORIZATION' | 'PURCHASE' | 'REFUND'
+  card_account_id: string
   merchant_name: string
+  merchant_country: string | null
   merchant_amount: string
   merchant_asset_id: string
   billing_amount: string
   billing_asset_id: string
   merchant_value_myr: string
+  category_id: string | null
+  expense_account_id: string | null
+  refunded_value_myr: string
+  refundable_remaining_myr: string | null
   status: string
   authorized_at: string | null
   settled_at: string | null

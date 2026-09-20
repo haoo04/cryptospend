@@ -18,7 +18,9 @@ from app.cards import (
     create_reward,
     create_settlement,
     credit_reward,
+    derive_refund_expense_account,
     get_card,
+    refund_summary,
     release_authorization,
     reverse_reward,
 )
@@ -862,20 +864,33 @@ def list_cost_lots(
 
 def card_read(session: Session, card: CardTransaction) -> dict:
     hold = session.scalar(select(CardHold).where(CardHold.card_transaction_id == card.id))
+    summary = refund_summary(session, card) if card.transaction_type == "PURCHASE" else None
+    expense = derive_refund_expense_account(session, card) if summary is not None else None
     return {
         "id": card.id,
         "event_id": card.event_id,
         "parent_card_transaction_id": card.parent_card_transaction_id,
         "original_transaction_id": card.original_transaction_id,
         "provider": card.provider,
+        "provider_account_id": card.provider_account_id,
         "external_id": card.external_id,
         "transaction_type": card.transaction_type,
+        "card_account_id": card.card_account_id,
         "merchant_name": card.merchant_name,
+        "merchant_country": card.merchant_country,
         "merchant_amount": card.merchant_amount,
         "merchant_asset_id": card.merchant_asset_id,
         "billing_amount": card.billing_amount,
         "billing_asset_id": card.billing_asset_id,
         "merchant_value_myr": micros_to_myr(card.merchant_value_myr),
+        "category_id": card.event.category_id if card.event else None,
+        "expense_account_id": expense.id if expense else None,
+        "refunded_value_myr": micros_to_myr(int(summary["refunded_transaction_value_myr"]))
+        if summary is not None
+        else "0",
+        "refundable_remaining_myr": micros_to_myr(int(summary["refundable_remaining_myr"]))
+        if summary is not None
+        else None,
         "status": card.status,
         "authorized_at": card.authorized_at,
         "settled_at": card.settled_at,

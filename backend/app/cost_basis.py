@@ -320,17 +320,9 @@ def reverse_cost_projection(session: Session, event: TransactionEvent) -> None:
             card.reversed = True
             original = session.get(CardTransaction, card.original_transaction_id)
             if original:
-                other_refund = session.scalar(
-                    select(CardTransaction.id).where(
-                        CardTransaction.original_transaction_id == original.id,
-                        CardTransaction.id != card.id,
-                        CardTransaction.reversed.is_(False),
-                    )
-                )
-                original.status = "PARTIALLY_REFUNDED" if other_refund else "SETTLED"
-                from app.cards import recalculate_card_net
+                from app.cards import recalculate_refund_status
 
-                recalculate_card_net(session, original)
+                recalculate_refund_status(session, original)
         card.status = "REVERSED"
         card.reversed = True
     reward = session.scalar(select(Reward).where(Reward.event_id == event.id))

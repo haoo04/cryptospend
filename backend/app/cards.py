@@ -25,9 +25,10 @@ from app.models import (
     CardTransaction,
     EventLink,
     FeeComponent,
+    LedgerEntry,
     Reward,
 )
-from app.money import canonical_decimal, micros_to_myr, myr_to_micros, parse_decimal
+from app.money import canonical_decimal, derive_rate_from_micros, micros_to_myr, myr_to_micros, parse_decimal
 from app.schemas import (
     CardAuthorizationCreate,
     CardRefundCreate,
@@ -200,6 +201,62 @@ def release_authorization(session: Session, card: CardTransaction) -> CardTransa
 
 def allocation_basis(allocations: list[LotAllocation]) -> int:
     return sum(allocation.basis_myr for allocation in allocations)
+
+
+def derive_refund_expense_account(session: Session, purchase: CardTransaction) -> Account | None:
+    if purchase.transaction_type != "PURCHASE" or purchase.event_id is None:
+        return None
+    candidates = session.scalars(
+        select(LedgerEntry)
+        .join(Account, LedgerEntry.account_id == Account.id)
+        .where(
+            LedgerEntry.event_id == purchase.event_id,
+            LedgerEntry.direction == EntryDirection.DEBIT.value,
+            LedgerEntry.asset_id == purchase.merchant_asset_id,
+            Account.account_type == AccountType.EXPENSE.value,
+        )
+    ).all()
+    matches = [
+        entry
+        for entry in candidates
+        if parse_decimal(entry.quantity) == parse_decimal(purchase.merchant_amount)
+        and entry.book_amount_myr == purchase.merchant_value_myr
+    ]
+    if len(matches) != 1:
+        return None
+    return session.get(Account, matches[0].account_id)
+
+
+def refund_summary(session: Session, purchase: CardTransaction) -> dict[str, int | str]:
+    refunds = session.scalars(
+        select(CardTransaction).where(
+            CardTransaction.original_transaction_id == purchase.id,
+            CardTransaction.transaction_type == "REFUND",
+            CardTransaction.reversed.is_(False),
+        )
+    ).all()
+    refunded_transaction_value = sum(refund.merchant_value_myr for refund in refunds)
+    refunded_reference_value = sum(refund.funding_value_myr for refund in refunds)
+    remaining = purchase.merchant_value_myr - refunded_transaction_value
+    if refunded_transaction_value == 0:
+        status = CardStatus.SETTLED.value
+    elif remaining > 0:
+        status = CardStatus.PARTIALLY_REFUNDED.value
+    else:
+        status = CardStatus.REFUNDED.value
+    return {
+        "refunded_transaction_value_myr": refunded_transaction_value,
+        "refunded_reference_value_myr": refunded_reference_value,
+        "refundable_remaining_myr": remaining,
+        "derived_status": status,
+    }
+
+
+def recalculate_refund_status(session: Session, purchase: CardTransaction) -> dict[str, int | str]:
+    summary = refund_summary(session, purchase)
+    purchase.status = str(summary["derived_status"])
+    recalculate_card_net(session, purchase)
+    return summary
 
 
 def create_settlement(session: Session, command: CardSettlementCreate) -> CardTransaction:
@@ -446,19 +503,7 @@ def create_settlement(session: Session, command: CardSettlementCreate) -> CardTr
 
 
 def recalculate_card_net(session: Session, settlement: CardTransaction) -> None:
-    refunds = session.scalars(
-        select(CardTransaction).where(
-            CardTransaction.original_transaction_id == settlement.id,
-            CardTransaction.transaction_type == "REFUND",
-            CardTransaction.reversed.is_(False),
-        )
-    ).all()
-    refund_value = sum(
-        leg.reference_value_myr
-        for refund in refunds
-        for leg in refund.funding_legs
-        if not leg.reversed and leg.leg_type == "REFUND"
-    )
+    refund_value = int(refund_summary(session, settlement)["refunded_reference_value_myr"])
     cashback = sum(
         reward.value_myr or 0 for reward in settlement.rewards if reward.status == RewardStatus.CREDITED.value
     )
@@ -471,12 +516,13 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
         CardStatus.PARTIALLY_REFUNDED.value,
     }:
         raise DomainError("only a settled purchase can be refunded", 409)
-    expense = session.get(Account, command.expense_account_id)
-    if expense is None or expense.account_type != AccountType.EXPENSE.value:
-        raise DomainError("expense_account_id must reference an EXPENSE account")
-    refund_value = myr_to_micros(command.refund_value_myr)
-    if sum(myr_to_micros(leg.transaction_value_myr) for leg in command.refund_legs) != refund_value:
-        raise DomainError("refund leg transaction values must equal refund value")
+    expense = derive_refund_expense_account(session, original)
+    if expense is None:
+        raise DomainError("purchase merchant expense account cannot be derived uniquely", 409)
+    refund_value = sum(myr_to_micros(leg.transaction_value_myr) for leg in command.refund_legs)
+    current_summary = refund_summary(session, original)
+    if refund_value > int(current_summary["refundable_remaining_myr"]):
+        raise DomainError("refund transaction value exceeds refundable remaining amount", 409)
     assert_external_id_available(session, original.provider, original.provider_account_id, command.external_id)
     for leg in command.refund_legs:
         require_asset_account(session, leg.account_id)
@@ -496,11 +542,11 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
     ]
     entries.append(
         {
-            "account_id": command.expense_account_id,
+            "account_id": expense.id,
             "asset_id": myr_asset(session).id,
             "direction": EntryDirection.CREDIT,
-            "quantity": command.refund_value_myr,
-            "book_amount_myr": command.refund_value_myr,
+            "quantity": micros_to_myr(refund_value),
+            "book_amount_myr": micros_to_myr(refund_value),
         }
     )
     event = post_event(
@@ -512,7 +558,7 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
                 occurred_at=command.refunded_at,
                 description=command.description or f"Refund from {original.merchant_name}",
                 category_id=original.event.category_id if original.event else None,
-                transaction_value_myr=command.refund_value_myr,
+                transaction_value_myr=micros_to_myr(refund_value),
                 entries=entries,
             ),
         ),
@@ -528,9 +574,9 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
         merchant_name=original.merchant_name,
         merchant_country=original.merchant_country,
         merchant_asset_id=myr_asset(session).id,
-        merchant_amount=command.refund_value_myr,
+        merchant_amount=micros_to_myr(refund_value),
         billing_asset_id=original.billing_asset_id,
-        billing_amount=command.refund_value_myr,
+        billing_amount=micros_to_myr(refund_value),
         merchant_value_myr=refund_value,
         funding_value_myr=sum(myr_to_micros(leg.reference_value_myr) for leg in command.refund_legs),
         status=CardStatus.SETTLED.value,
@@ -564,8 +610,7 @@ def create_refund(session: Session, original: CardTransaction, command: CardRefu
             )
         )
     session.add(EventLink(source_event_id=original.event_id, target_event_id=event.id, relation_type="REFUND"))
-    original.status = CardStatus.REFUNDED.value if command.full_refund else CardStatus.PARTIALLY_REFUNDED.value
-    recalculate_card_net(session, original)
+    recalculate_refund_status(session, original)
     add_audit(session, "CARD_REFUNDED", event.id, {"original_card_transaction_id": original.id})
     session.flush()
     return refund
@@ -598,6 +643,18 @@ def credit_reward(session: Session, reward: Reward, command: RewardCreditCreate)
     income = session.get(Account, command.income_account_id)
     if income is None or income.account_type != AccountType.INCOME.value:
         raise DomainError("income_account_id must reference an INCOME account")
+    value_micros = myr_to_micros(command.value_myr)
+    valuation_source = command.valuation_source.strip()
+    if not valuation_source:
+        raise DomainError("valuation_source is required")
+    try:
+        valuation_rate = derive_rate_from_micros(reward.amount, value_micros)
+        if command.valuation_rate is not None:
+            supplied_rate = parse_decimal(command.valuation_rate)
+            if supplied_rate <= 0 or myr_to_micros(parse_decimal(reward.amount) * supplied_rate) != value_micros:
+                raise DomainError("valuation_rate conflicts with reward amount and value")
+    except ValueError as exc:
+        raise DomainError("valuation_rate must be a finite positive decimal") from exc
     event = post_event(
         session,
         create_draft(
@@ -607,32 +664,32 @@ def credit_reward(session: Session, reward: Reward, command: RewardCreditCreate)
                 occurred_at=command.credited_at,
                 description=f"{reward.reward_type.title()} credited",
                 category_id=command.category_id,
-                transaction_value_myr=command.value_myr,
+                transaction_value_myr=micros_to_myr(value_micros),
                 entries=[
                     {
                         "account_id": reward.account_id,
                         "asset_id": reward.asset_id,
                         "direction": EntryDirection.DEBIT,
                         "quantity": reward.amount,
-                        "book_amount_myr": command.value_myr,
-                        "valuation_rate": command.valuation_rate,
-                        "valuation_source": command.valuation_source,
+                        "book_amount_myr": micros_to_myr(value_micros),
+                        "valuation_rate": valuation_rate,
+                        "valuation_source": valuation_source,
                     },
                     {
                         "account_id": command.income_account_id,
                         "asset_id": reward.asset_id,
                         "direction": EntryDirection.CREDIT,
                         "quantity": reward.amount,
-                        "book_amount_myr": command.value_myr,
-                        "valuation_rate": command.valuation_rate,
-                        "valuation_source": command.valuation_source,
+                        "book_amount_myr": micros_to_myr(value_micros),
+                        "valuation_rate": valuation_rate,
+                        "valuation_source": valuation_source,
                     },
                 ],
             ),
         ),
     )
     reward.event_id = event.id
-    reward.value_myr = myr_to_micros(command.value_myr)
+    reward.value_myr = value_micros
     reward.status = RewardStatus.CREDITED.value
     reward.credited_at = utc_text(command.credited_at)
     card = reward.card_transaction

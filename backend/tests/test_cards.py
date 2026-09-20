@@ -179,6 +179,12 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
     cards = {card["id"]: card for card in client.get("/api/cards").json()}
     assert cards[authorization["id"]]["status"] == "SETTLED"
     assert cards[authorization["id"]]["hold"]["status"] == "RELEASED"
+    assert settlement["provider_account_id"] == "card-main"
+    assert settlement["card_account_id"] == accounts["Crypto Wallet"]["id"]
+    assert settlement["merchant_country"] == "MY"
+    assert settlement["expense_account_id"] == accounts["General Expense"]["id"]
+    assert settlement["refunded_value_myr"] == "0"
+    assert settlement["refundable_remaining_myr"] == "100"
 
     costs = client.get("/api/reports/card-costs").json()
     assert len(costs) == 1
@@ -233,13 +239,6 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
         f"/api/cards/{settlement['id']}/refunds",
         json={
             "external_id": "refund-1",
-            "refund_value_myr": "40",
-            "expense_account_id": accounts["General Expense"]["id"],
-            "category_id": next(
-                category["id"]
-                for category in client.get("/api/categories").json()
-                if category["kind"] == "EXPENSE" and category["name"] == "Food"
-            ),
             "refund_legs": [
                 {
                     "account_id": accounts["Crypto Wallet"]["id"],
@@ -250,10 +249,13 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
                 }
             ],
             "refunded_at": "2026-08-08T00:00:00Z",
-            "full_refund": False,
         },
     )
     assert refund.status_code == 201, refund.text
+    purchase = next(card for card in client.get("/api/cards").json() if card["id"] == settlement["id"])
+    assert purchase["status"] == "PARTIALLY_REFUNDED"
+    assert purchase["refunded_value_myr"] == "40"
+    assert purchase["refundable_remaining_myr"] == "60"
     cost = client.get("/api/reports/card-costs").json()[0]
     assert cost["status"] == "PARTIALLY_REFUNDED"
     assert cost["refunded_value_myr"] == "39.95"
@@ -261,6 +263,114 @@ def test_settlement_refund_and_credited_cashback_are_independent(client: TestCli
     assert cost["net_economic_cost_myr"] == "57.63"
     usd_lots = client.get(f"/api/cost-lots?asset_id={assets['USD']['id']}").json()
     assert any(lot["remaining_quantity"] == "9.4" and lot["remaining_basis_myr"] == "40" for lot in usd_lots)
+
+
+def test_refund_limit_status_and_reversal_are_server_derived(client: TestClient) -> None:
+    assets, accounts = setup_card_ledger(client)
+    purchase = settle(client, assets, accounts, authorize(client, assets, accounts, "authorization-refunds")["id"])
+
+    def refund_payload(external_id: str, transaction_value: str, reference_value: str) -> dict:
+        return {
+            "external_id": external_id,
+            "refund_legs": [
+                {
+                    "account_id": accounts["Crypto Wallet"]["id"],
+                    "asset_id": assets["USD"]["id"],
+                    "quantity": transaction_value,
+                    "transaction_value_myr": transaction_value,
+                    "reference_value_myr": reference_value,
+                }
+            ],
+            "refunded_at": "2026-08-08T00:00:00Z",
+        }
+
+    first = client.post(
+        f"/api/cards/{purchase['id']}/refunds", json=refund_payload("refund-first", "40", "39.95")
+    )
+    assert first.status_code == 201, first.text
+    before_overage_events = client.get("/api/events").json()
+    overage = client.post(
+        f"/api/cards/{purchase['id']}/refunds", json=refund_payload("refund-overage", "61", "60.95")
+    )
+    assert overage.status_code == 409
+    assert "exceeds" in overage.json()["detail"]
+    assert client.get("/api/events").json() == before_overage_events
+
+    second = client.post(
+        f"/api/cards/{purchase['id']}/refunds", json=refund_payload("refund-second", "60", "59.95")
+    )
+    assert second.status_code == 201, second.text
+    refunded = next(card for card in client.get("/api/cards").json() if card["id"] == purchase["id"])
+    assert refunded["status"] == "REFUNDED"
+    assert refunded["refunded_value_myr"] == "100"
+    assert refunded["refundable_remaining_myr"] == "0"
+
+    reverse_second = client.post(
+        f"/api/events/{second.json()['event_id']}/reverse", json={"reason": "second refund correction"}
+    )
+    assert reverse_second.status_code == 201, reverse_second.text
+    partial = next(card for card in client.get("/api/cards").json() if card["id"] == purchase["id"])
+    assert partial["status"] == "PARTIALLY_REFUNDED"
+    assert partial["refunded_value_myr"] == "40"
+    assert partial["refundable_remaining_myr"] == "60"
+
+    reverse_first = client.post(
+        f"/api/events/{first.json()['event_id']}/reverse", json={"reason": "first refund correction"}
+    )
+    assert reverse_first.status_code == 201, reverse_first.text
+    restored = next(card for card in client.get("/api/cards").json() if card["id"] == purchase["id"])
+    assert restored["status"] == "SETTLED"
+    assert restored["refunded_value_myr"] == "0"
+    assert restored["refundable_remaining_myr"] == "100"
+
+
+def test_reward_rate_is_derived_and_legacy_mismatch_is_rejected(client: TestClient) -> None:
+    assets, accounts = setup_card_ledger(client)
+    purchase = settle(client, assets, accounts, authorize(client, assets, accounts, "authorization-reward")["id"])
+    pending = client.post(
+        f"/api/cards/{purchase['id']}/rewards",
+        json={
+            "reward_type": "CASHBACK",
+            "account_id": accounts["Crypto Wallet"]["id"],
+            "asset_id": assets["USDT"]["id"],
+            "amount": "1",
+            "earned_at": "2026-08-06T12:00:00Z",
+        },
+    )
+    assert pending.status_code == 201, pending.text
+    reward_id = pending.json()["id"]
+    before_events = client.get("/api/events").json()
+    mismatch = client.post(
+        f"/api/rewards/{reward_id}/credit",
+        json={
+            "income_account_id": accounts["Other Income"]["id"],
+            "value_myr": "4.25",
+            "valuation_rate": "100",
+            "valuation_source": "credited price",
+            "credited_at": "2026-08-07T00:00:00Z",
+        },
+    )
+    assert mismatch.status_code == 422
+    assert "valuation_rate" in mismatch.json()["detail"]
+    assert client.get("/api/events").json() == before_events
+
+    credited = client.post(
+        f"/api/rewards/{reward_id}/credit",
+        json={
+            "income_account_id": accounts["Other Income"]["id"],
+            "category_id": next(
+                category["id"]
+                for category in client.get("/api/categories").json()
+                if category["kind"] == "INCOME" and category["name"] == "Cashback"
+            ),
+            "value_myr": "4.25",
+            "valuation_source": "credited price",
+            "credited_at": "2026-08-07T00:00:00Z",
+        },
+    )
+    assert credited.status_code == 200, credited.text
+    reward_event = next(event for event in client.get("/api/events").json() if event["event_type"] == "REWARD")
+    assert {entry["valuation_rate"] for entry in reward_event["entries"]} == {"4.25"}
 
 
 def test_separate_fee_is_added_once_to_economic_cost(client: TestClient) -> None:
