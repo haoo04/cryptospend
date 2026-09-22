@@ -165,6 +165,142 @@ def test_salary_transfer_expense_and_reversal_reports(client: TestClient) -> Non
     }
 
 
+def test_reimbursement_received_reduces_expense_and_increases_net_worth(client: TestClient) -> None:
+    assets, accounts = onboard(client)
+    categories = {
+        (category["kind"], category["name"]): category["id"]
+        for category in client.get("/api/categories").json()
+    }
+
+    expense = client.post(
+        "/api/events/manual",
+        json={
+            "event_type": "EXPENSE",
+            "occurred_at": "2026-08-01T12:00:00+08:00",
+            "description": "Lunch paid up front",
+            "category_id": categories[("EXPENSE", "Food")],
+            "debit_account_id": accounts["General Expense"]["id"],
+            "credit_account_id": accounts["Cash"]["id"],
+            "asset_id": assets["MYR"]["id"],
+            "quantity": "100",
+            "book_amount_myr": "100",
+        },
+    )
+    assert expense.status_code == 201, expense.text
+
+    before = client.get("/api/reports/summary").json()
+    assert {
+        key: before[key]
+        for key in ("net_worth_myr", "income_myr", "expense_myr", "gross_spending_myr", "net_spending_myr")
+    } == {
+        "net_worth_myr": "-100",
+        "income_myr": "0",
+        "expense_myr": "100",
+        "gross_spending_myr": "100",
+        "net_spending_myr": "100",
+    }
+
+    reimbursement = client.post(
+        "/api/events/manual",
+        json={
+            "event_type": "REIMBURSEMENT_RECEIVED",
+            "occurred_at": "2026-08-02T12:00:00+08:00",
+            "description": "Alice reimbursed the lunch paid up front",
+            "category_id": categories[("EXPENSE", "Food")],
+            "debit_account_id": accounts["Cash"]["id"],
+            "credit_account_id": accounts["General Expense"]["id"],
+            "asset_id": assets["MYR"]["id"],
+            "quantity": "40",
+            "book_amount_myr": "40",
+        },
+    )
+    assert reimbursement.status_code == 201, reimbursement.text
+    reimbursement_event = reimbursement.json()
+    assert reimbursement_event["event_type"] == "REIMBURSEMENT_RECEIVED"
+    assert {entry["direction"] for entry in reimbursement_event["entries"]} == {"DEBIT", "CREDIT"}
+    assert all(entry["asset_id"] == assets["MYR"]["id"] for entry in reimbursement_event["entries"])
+
+    after = client.get("/api/reports/summary").json()
+    assert {
+        key: after[key]
+        for key in ("net_worth_myr", "income_myr", "expense_myr", "gross_spending_myr", "net_spending_myr")
+    } == {
+        "net_worth_myr": "-60",
+        "income_myr": "0",
+        "expense_myr": "60",
+        "gross_spending_myr": "100",
+        "net_spending_myr": "60",
+    }
+    assert client.get("/api/reports/income-expense").json() == {
+        "income_myr": "0",
+        "expense_myr": "60",
+        "net_income_myr": "-60",
+    }
+
+    lots = client.get(f"/api/cost-lots?asset_id={assets['MYR']['id']}").json()
+    reimbursement_lots = [lot for lot in lots if lot["source_event_id"] == reimbursement_event["id"]]
+    assert len(reimbursement_lots) == 1
+    assert reimbursement_lots[0]["remaining_quantity"] == "40"
+
+    search = client.get("/api/events/search", params={"event_type": "REIMBURSEMENT_RECEIVED"})
+    assert search.status_code == 200
+    assert search.json()["total"] == 1
+    assert search.json()["items"][0]["id"] == reimbursement_event["id"]
+
+    reversed_reimbursement = client.post(
+        f"/api/events/{reimbursement_event['id']}/reverse",
+        json={"reason": "entered in error"},
+    )
+    assert reversed_reimbursement.status_code == 201, reversed_reimbursement.text
+    restored = client.get("/api/reports/summary").json()
+    assert restored["net_worth_myr"] == "-100"
+    assert restored["expense_myr"] == "100"
+    voided_lots = client.get(
+        f"/api/cost-lots?asset_id={assets['MYR']['id']}&include_voided=true"
+    ).json()
+    restored_lot = next(lot for lot in voided_lots if lot["source_event_id"] == reimbursement_event["id"])
+    assert restored_lot["voided"] is True
+    assert restored_lot["remaining_quantity"] == "0"
+
+
+def test_reimbursement_received_rejects_invalid_inputs_without_side_effects(client: TestClient) -> None:
+    assets, accounts = onboard(client)
+    categories = {
+        (category["kind"], category["name"]): category["id"]
+        for category in client.get("/api/categories").json()
+    }
+    base = {
+        "event_type": "REIMBURSEMENT_RECEIVED",
+        "occurred_at": "2026-08-01T12:00:00+08:00",
+        "description": "Friend reimbursement",
+        "category_id": categories[("EXPENSE", "Food")],
+        "debit_account_id": accounts["Cash"]["id"],
+        "credit_account_id": accounts["General Expense"]["id"],
+        "asset_id": assets["MYR"]["id"],
+        "quantity": "40",
+        "book_amount_myr": "40",
+    }
+    invalid_payloads = [
+        {**base, "description": ""},
+        {**base, "category_id": None},
+        {**base, "category_id": categories[("INCOME", "Salary")]},
+        {**base, "debit_account_id": accounts["General Expense"]["id"]},
+        {
+            **base,
+            "asset_id": assets["USDT"]["id"],
+            "quantity": "10",
+            "book_amount_myr": "42.5",
+        },
+    ]
+
+    for payload in invalid_payloads:
+        response = client.post("/api/events/manual", json=payload)
+        assert response.status_code == 422, response.text
+
+    assert client.get("/api/events").json() == []
+    assert client.get(f"/api/cost-lots?asset_id={assets['MYR']['id']}").json() == []
+
+
 def test_event_search_filters_dates_and_pagination(client: TestClient) -> None:
     assets, accounts = onboard(client)
     categories = {

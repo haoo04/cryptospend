@@ -42,6 +42,7 @@ const transactionEventTypes = [
   'SALARY',
   'INCOME',
   'EXPENSE',
+  'REIMBURSEMENT_RECEIVED',
   'TRANSFER',
   'TRADE',
   'CARD_SETTLEMENT',
@@ -51,6 +52,15 @@ const transactionEventTypes = [
   'ADJUSTMENT',
   'REVERSAL',
 ] as const
+
+const eventTypeLabels: Record<string, string> = {
+  REIMBURSEMENT_RECEIVED: 'Reimbursement received',
+  TRANSFER: 'Internal transfer',
+}
+
+function eventTypeLabel(eventType: string) {
+  return eventTypeLabels[eventType] ?? eventType.replaceAll('_', ' ')
+}
 
 const transactionStatuses = ['DRAFT', 'POSTED', 'REVERSED'] as const
 const transactionPageSize = 50
@@ -989,7 +999,7 @@ function Dashboard({
               <div className="activity-row" key={event.id}>
                 <span className="event-icon">{event.event_type.slice(0, 1)}</span>
                 <div>
-                  <strong>{event.description || event.event_type.replaceAll('_', ' ')}</strong>
+                  <strong>{event.description || eventTypeLabel(event.event_type)}</strong>
                   <span>{new Date(event.occurred_at).toLocaleString()}</span>
                 </div>
                 <span className={`pill ${event.status.toLowerCase()}`}>{event.status}</span>
@@ -1068,7 +1078,7 @@ function TransactionTable({
               {events.map((event) => (
                 <tr className={selected?.id === event.id ? 'selected' : ''} key={event.id}>
                   <td>{new Date(event.occurred_at).toLocaleDateString()}</td>
-                  <td>{event.event_type.replaceAll('_', ' ')}</td>
+                  <td>{eventTypeLabel(event.event_type)}</td>
                   <td>{event.description || '—'}</td>
                   <td>{event.category || 'Uncategorized'} {event.receipt && <span title="Receipt attached" aria-label="Receipt attached">▣</span>}</td>
                   <td>
@@ -1092,7 +1102,7 @@ function TransactionTable({
             ×
           </button>
           <span className="eyebrow">EVENT DETAIL</span>
-          <h2>{selected.description || selected.event_type.replaceAll('_', ' ')}</h2>
+          <h2>{selected.description || eventTypeLabel(selected.event_type)}</h2>
           <dl>
             <div><dt>Status</dt><dd>{selected.status}</dd></div>
             <div><dt>Occurred</dt><dd>{new Date(selected.occurred_at).toLocaleString()}</dd></div>
@@ -1279,7 +1289,7 @@ export function Transactions({
         </div>
         <form className="transaction-filters" onSubmit={(event) => void applyFilters(event)}>
           <label className="transaction-search">Search transactions<input aria-label="Search transactions" value={draftFilters.q} onChange={(event) => updateDraftFilter('q', event.target.value)} placeholder="Description, type, category or ID" /></label>
-          <label>Type<select aria-label="Transaction type" value={draftFilters.event_type} onChange={(event) => updateDraftFilter('event_type', event.target.value)}><option value="">All types</option>{transactionEventTypes.map((type) => <option value={type} key={type}>{type.replaceAll('_', ' ')}</option>)}</select></label>
+          <label>Type<select aria-label="Transaction type" value={draftFilters.event_type} onChange={(event) => updateDraftFilter('event_type', event.target.value)}><option value="">All types</option>{transactionEventTypes.map((type) => <option value={type} key={type}>{eventTypeLabel(type)}</option>)}</select></label>
           <label>Status<select aria-label="Transaction status" value={draftFilters.status} onChange={(event) => updateDraftFilter('status', event.target.value)}><option value="">All statuses</option>{transactionStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select></label>
           <label>Category<select aria-label="Transaction category" value={draftFilters.category_id} onChange={(event) => updateDraftFilter('category_id', event.target.value)}><option value="">All categories</option><option value="uncategorized">Uncategorized</option>{categories.map((category) => <option value={category.id} key={category.id}>{category.name}{category.active ? '' : ' (inactive)'}</option>)}</select></label>
           <label>From date<input aria-label="From date" type="date" value={draftFilters.from_date} onChange={(event) => updateDraftFilter('from_date', event.target.value)} /></label>
@@ -1346,6 +1356,7 @@ export function AddTransaction({
   const allowed = useMemo(() => {
     if (eventType === 'SALARY' || eventType === 'INCOME') return { debit: ['ASSET'], credit: ['INCOME'] }
     if (eventType === 'EXPENSE') return { debit: ['EXPENSE'], credit: ['ASSET'] }
+    if (eventType === 'REIMBURSEMENT_RECEIVED') return { debit: ['ASSET'], credit: ['EXPENSE'] }
     if (eventType === 'TRANSFER') return { debit: ['ASSET', 'CLEARING'], credit: ['ASSET', 'CLEARING'] }
     if (eventType === 'OPENING_BALANCE') return { debit: ['ASSET'], credit: ['EQUITY'] }
     return {
@@ -1355,7 +1366,7 @@ export function AddTransaction({
   }, [eventType])
   const categoryKind = useMemo<Category['kind'] | null>(() => {
     if (eventType === 'SALARY' || eventType === 'INCOME') return 'INCOME'
-    if (eventType === 'EXPENSE') return 'EXPENSE'
+    if (eventType === 'EXPENSE' || eventType === 'REIMBURSEMENT_RECEIVED') return 'EXPENSE'
     if (eventType === 'ADJUSTMENT') {
       const debitType = accounts.find((account) => account.id === debit)?.account_type
       const creditType = accounts.find((account) => account.id === credit)?.account_type
@@ -1365,10 +1376,10 @@ export function AddTransaction({
     return null
   }, [accounts, credit, debit, eventType])
   const categoryOptions = categories.filter((category) => category.active && category.kind === categoryKind)
-  const categoryRequired = ['SALARY', 'INCOME', 'EXPENSE'].includes(eventType)
+  const categoryRequired = ['SALARY', 'INCOME', 'EXPENSE', 'REIMBURSEMENT_RECEIVED'].includes(eventType)
   const selectedCategoryId = categoryOptions.some((category) => category.id === categoryId) ? categoryId : ''
   const eligibleAssets = useMemo(
-    () => eventType === 'EXPENSE' || eventType === 'ADJUSTMENT'
+    () => eventType === 'EXPENSE' || eventType === 'REIMBURSEMENT_RECEIVED' || eventType === 'ADJUSTMENT'
       ? assets.filter((item) => item.symbol === 'MYR' && item.chain === null)
       : assets,
     [assets, eventType],
@@ -1376,7 +1387,7 @@ export function AddTransaction({
   const selectedAssetId = eligibleAssets.some((item) => item.id === asset) ? asset : ''
   const selectedAsset = assets.find((item) => item.id === selectedAssetId)
   const isMyrAsset = selectedAsset?.symbol === 'MYR'
-  const showMyrAmount = isMyrAsset || eventType === 'EXPENSE' || eventType === 'ADJUSTMENT'
+  const showMyrAmount = isMyrAsset || eventType === 'EXPENSE' || eventType === 'REIMBURSEMENT_RECEIVED' || eventType === 'ADJUSTMENT'
   const derivedRate = selectedAssetId && !isMyrAsset && isPositiveDecimal(quantity) && isPositiveDecimal(bookAmount)
     ? divideDecimal(bookAmount, quantity, 18)
     : ''
@@ -1434,11 +1445,14 @@ export function AddTransaction({
           Event type
             <select value={eventType} onChange={(event) => {
               setEventType(event.target.value)
+              setDebit('')
+              setCredit('')
               setAsset('')
               setQuantity('')
               setBookAmount('')
+              setCategoryId('')
             }}>
-            {['SALARY', 'INCOME', 'EXPENSE', 'OPENING_BALANCE', 'ADJUSTMENT'].map((type) => <option key={type}>{type}</option>)}
+            {['SALARY', 'INCOME', 'EXPENSE', 'REIMBURSEMENT_RECEIVED', 'OPENING_BALANCE', 'ADJUSTMENT'].map((type) => <option value={type} key={type}>{eventTypeLabel(type)}</option>)}
           </select>
         </label>
         <label>
@@ -1447,7 +1461,7 @@ export function AddTransaction({
         </label>
         <label className="wide">
           Description
-          <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What happened?" />
+          <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What happened?" required={eventType === 'REIMBURSEMENT_RECEIVED'} />
         </label>
         <label>
           Debit account
@@ -1542,7 +1556,7 @@ function EntryModeTabs({ mode, onChange }: {
     <div className="mode-tabs">
       {(['MANUAL', 'TRADE', 'TRANSFER'] as const).map((item) => (
         <button type="button" className={mode === item ? 'active' : ''} onClick={() => onChange(item)} key={item}>
-          {item}
+          {item === 'TRANSFER' ? 'Internal transfer' : item}
         </button>
       ))}
     </div>

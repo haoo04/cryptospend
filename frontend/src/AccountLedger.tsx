@@ -9,6 +9,7 @@ const ledgerEventTypes = [
   'SALARY',
   'INCOME',
   'EXPENSE',
+  'REIMBURSEMENT_RECEIVED',
   'TRANSFER',
   'TRADE',
   'CARD_SETTLEMENT',
@@ -18,6 +19,15 @@ const ledgerEventTypes = [
   'ADJUSTMENT',
   'REVERSAL',
 ] as const
+
+const eventTypeLabels: Record<string, string> = {
+  REIMBURSEMENT_RECEIVED: 'Reimbursement received',
+  TRANSFER: 'Internal transfer',
+}
+
+function eventTypeLabel(eventType: string) {
+  return eventTypeLabels[eventType] ?? eventType.replaceAll('_', ' ')
+}
 
 const ledgerPageSize = 50
 
@@ -230,7 +240,7 @@ export function AccountLedger({
         <form className="account-ledger-filters" onSubmit={(event) => applyFilters(event)}>
           <label className="account-ledger-search">Search activity<input aria-label="Search account activity" value={draftFilters.q} onChange={(event) => updateDraftFilter('q', event.target.value)} placeholder="Description, type, counterparty or ID" /></label>
           <label>Asset<select aria-label="Account ledger asset" value={draftFilters.asset_id} onChange={(event) => updateDraftFilter('asset_id', event.target.value)}><option value="">All assets</option>{assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.symbol}</option>)}</select></label>
-          <label>Type<select aria-label="Account ledger event type" value={draftFilters.event_type} onChange={(event) => updateDraftFilter('event_type', event.target.value)}><option value="">All types</option>{ledgerEventTypes.map((type) => <option value={type} key={type}>{type.replaceAll('_', ' ')}</option>)}</select></label>
+          <label>Type<select aria-label="Account ledger event type" value={draftFilters.event_type} onChange={(event) => updateDraftFilter('event_type', event.target.value)}><option value="">All types</option>{ledgerEventTypes.map((type) => <option value={type} key={type}>{eventTypeLabel(type)}</option>)}</select></label>
           <label>From date<input aria-label="Account ledger from date" type="date" value={draftFilters.from_date} onChange={(event) => updateDraftFilter('from_date', event.target.value)} /></label>
           <label>To date<input aria-label="Account ledger to date" type="date" value={draftFilters.to_date} onChange={(event) => updateDraftFilter('to_date', event.target.value)} /></label>
           <div className="transaction-filter-actions"><button className="primary" type="submit">Apply filters</button><button className="secondary" type="button" onClick={clearFilters}>Clear</button></div>
@@ -252,7 +262,7 @@ export function AccountLedger({
               {result?.items.map((item) => (
                 <tr key={`${item.event_id}-${item.asset_id}`}>
                   <td><strong>{formatOccurredAt(item, result.timezone)}</strong><span className="muted">{item.time_precision === 'DATE_ONLY' ? 'Date only' : item.source}</span></td>
-                  <td><strong>{item.description || item.event_type.replaceAll('_', ' ')}</strong><span className="muted">{item.event_type.replaceAll('_', ' ')}{item.category ? ` · ${item.category}` : ''}</span><span className={`pill ${item.event_status.toLowerCase()}`}>{item.event_status}</span></td>
+                  <td><strong>{item.description || eventTypeLabel(item.event_type)}</strong><span className="muted">{eventTypeLabel(item.event_type)}{item.category ? ` · ${item.category}` : ''}</span><span className={`pill ${item.event_status.toLowerCase()}`}>{item.event_status}</span></td>
                   <td><strong className={item.quantity_change.startsWith('-') ? 'ledger-change negative' : item.quantity_change === '0' ? 'ledger-change' : 'ledger-change positive'}>{signedQuantity(item.quantity_change)} {item.asset_symbol}</strong><span className="muted">{signedMyr(item.book_amount_myr_change)}</span></td>
                   <td><strong>{item.balance_after_quantity} {item.asset_symbol}</strong><span className="muted">{formatMyr(item.balance_after_book_amount_myr)}</span></td>
                   <td><span className="ledger-counterparties">{item.counterparties.length ? item.counterparties.map((counterparty) => counterparty.account_name).join(', ') : 'No counterparty'}</span>{item.receipt_attached && <span className="muted">Receipt attached</span>}</td>

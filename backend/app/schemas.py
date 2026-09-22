@@ -19,6 +19,7 @@ MANUAL_EVENT_TYPES = {
     EventType.SALARY,
     EventType.INCOME,
     EventType.EXPENSE,
+    EventType.REIMBURSEMENT_RECEIVED,
     EventType.ADJUSTMENT,
 }
 

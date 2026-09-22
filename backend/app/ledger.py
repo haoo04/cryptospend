@@ -33,6 +33,7 @@ REQUIRED_CATEGORY_EVENT_TYPES = {
     EventType.SALARY.value,
     EventType.INCOME.value,
     EventType.EXPENSE.value,
+    EventType.REIMBURSEMENT_RECEIVED.value,
     EventType.CARD_SETTLEMENT.value,
     EventType.REWARD.value,
 }
@@ -42,6 +43,7 @@ MANUAL_ACCOUNT_TYPES = {
     EventType.INCOME: ({AccountType.ASSET.value}, {AccountType.INCOME.value}),
     EventType.OPENING_BALANCE: ({AccountType.ASSET.value}, {AccountType.EQUITY.value}),
     EventType.EXPENSE: ({AccountType.EXPENSE.value}, {AccountType.ASSET.value}),
+    EventType.REIMBURSEMENT_RECEIVED: ({AccountType.ASSET.value}, {AccountType.EXPENSE.value}),
     EventType.ADJUSTMENT: (
         {
             AccountType.ASSET.value,
@@ -185,6 +187,8 @@ def post_event(session: Session, event: TransactionEvent) -> TransactionEvent:
 def create_manual_event(session: Session, command: ManualEventCreate) -> TransactionEvent:
     if command.event_type not in MANUAL_EVENT_TYPES:
         raise DomainError(f"manual {command.event_type.value} is not supported; use its dedicated workflow")
+    if command.event_type == EventType.REIMBURSEMENT_RECEIVED and not command.description.strip():
+        raise DomainError("manual REIMBURSEMENT_RECEIVED requires a description")
     if command.debit_account_id == command.credit_account_id:
         raise DomainError("manual debit and credit accounts must differ")
     debit_account = session.get(Account, command.debit_account_id)
@@ -197,9 +201,20 @@ def create_manual_event(session: Session, command: ManualEventCreate) -> Transac
             raise DomainError("manual SALARY/INCOME requires ASSET debit and INCOME credit")
         if command.event_type == EventType.EXPENSE:
             raise DomainError("manual EXPENSE requires EXPENSE debit and ASSET credit")
+        if command.event_type == EventType.REIMBURSEMENT_RECEIVED:
+            raise DomainError("manual REIMBURSEMENT_RECEIVED requires ASSET debit and EXPENSE credit")
         if command.event_type == EventType.OPENING_BALANCE:
             raise DomainError("manual OPENING_BALANCE requires ASSET debit and EQUITY credit")
         raise DomainError("manual ADJUSTMENT account types are not allowed")
+
+    if command.event_type == EventType.REIMBURSEMENT_RECEIVED:
+        validate_category_binding(
+            session,
+            command.category_id,
+            command.event_type.value,
+            [debit_account.account_type, credit_account.account_type],
+            required=True,
+        )
 
     asset = session.get(Asset, command.asset_id)
     if asset is None:
@@ -218,6 +233,8 @@ def create_manual_event(session: Session, command: ManualEventCreate) -> Transac
     else:
         if command.event_type == EventType.EXPENSE:
             raise DomainError("non-MYR EXPENSE requires a disposal-aware flow")
+        if command.event_type == EventType.REIMBURSEMENT_RECEIVED:
+            raise DomainError("manual REIMBURSEMENT_RECEIVED only supports MYR")
         if command.event_type == EventType.ADJUSTMENT:
             raise DomainError("non-MYR ADJUSTMENT is not supported")
         valuation_source = (command.valuation_source or "").strip()

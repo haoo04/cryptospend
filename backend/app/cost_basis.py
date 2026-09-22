@@ -202,6 +202,7 @@ def create_event_acquisition_lots(session: Session, event: TransactionEvent) -> 
         EventType.OPENING_BALANCE.value,
         EventType.SALARY.value,
         EventType.INCOME.value,
+        EventType.REIMBURSEMENT_RECEIVED.value,
         EventType.REWARD.value,
     }
     if event.event_type not in acquisition_types:

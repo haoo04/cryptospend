@@ -78,6 +78,8 @@ describe('transaction search and filters', () => {
     renderTransactions()
 
     expect(await screen.findByText('Cloud hosting')).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Reimbursement received' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Internal transfer' })).toBeTruthy()
     expect(screen.getByText('Showing 1–2 of 2')).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('Search transactions'), { target: { value: 'cloud' } })

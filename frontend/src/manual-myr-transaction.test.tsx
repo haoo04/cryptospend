@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AddTransaction } from './App'
-import type { Account, Asset } from './api'
+import type { Account, Asset, Category } from './api'
 
 const assets: Asset[] = [
   { id: 'myr', symbol: 'MYR', name: 'Malaysian Ringgit', decimals: 2, chain: null, contract_address: null, active: true },
@@ -14,6 +14,11 @@ const assets: Asset[] = [
 const accounts: Account[] = [
   { id: 'asset-account', name: 'Bank', account_type: 'ASSET', channel_type: 'BANK', provider: null, closed: false, balances: [], available_balances: [] },
   { id: 'income-account', name: 'Income', account_type: 'INCOME', channel_type: 'OTHER', provider: null, closed: false, balances: [], available_balances: [] },
+  { id: 'expense-account', name: 'Food', account_type: 'EXPENSE', channel_type: 'OTHER', provider: null, closed: false, balances: [], available_balances: [] },
+]
+
+const categories: Category[] = [
+  { id: 'food-category', name: 'Food', kind: 'EXPENSE', active: true, created_at: '', updated_at: '' },
 ]
 
 afterEach(cleanup)
@@ -102,5 +107,43 @@ describe('manual MYR transaction entry', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
     const submitted = (onSubmit.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0]
     expect(Object.hasOwn(submitted, 'valuation_rate')).toBe(false)
+  })
+
+  it('supports reimbursement received as a MYR expense credit', async () => {
+    const onSubmit = vi.fn(async () => true)
+
+    render(
+      <AddTransaction
+        assets={assets}
+        accounts={accounts}
+        categories={categories}
+        busy={false}
+        onSubmit={onSubmit}
+        onTrade={vi.fn(async () => true)}
+        onTransfer={vi.fn(async () => true)}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Internal transfer' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'REIMBURSEMENT_RECEIVED' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Alice reimbursed lunch' } })
+    fireEvent.change(screen.getByLabelText('Debit account'), { target: { value: 'asset-account' } })
+    fireEvent.change(screen.getByLabelText('Credit account'), { target: { value: 'expense-account' } })
+    fireEvent.change(screen.getByLabelText('Asset'), { target: { value: 'myr' } })
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'food-category' } })
+    fireEvent.change(screen.getByLabelText('MYR amount'), { target: { value: '40' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post balanced event' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      event_type: 'REIMBURSEMENT_RECEIVED',
+      description: 'Alice reimbursed lunch',
+      category_id: 'food-category',
+      debit_account_id: 'asset-account',
+      credit_account_id: 'expense-account',
+      asset_id: 'myr',
+      quantity: '40',
+      book_amount_myr: '40',
+    })))
   })
 })

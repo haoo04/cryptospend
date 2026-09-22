@@ -88,6 +88,8 @@ describe('account ledger page', () => {
     renderLedger(0, onInspectEvent)
 
     expect(await screen.findByRole('heading', { name: 'Cash account' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Reimbursement received' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Internal transfer' })).toBeTruthy()
     expect(screen.getByText('−10.00 MYR')).toBeTruthy()
     expect(screen.getByText('−RM 10.00')).toBeTruthy()
     expect(apiMock.accountLedger).toHaveBeenLastCalledWith('cash', { page: 1, page_size: 50 })
