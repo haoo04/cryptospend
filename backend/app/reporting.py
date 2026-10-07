@@ -401,7 +401,12 @@ def spending_by_channel(session: Session, start: str, end: str) -> list[dict[str
                 continue
             sign = 1 if entry.direction == EntryDirection.DEBIT.value else -1
             expense += entry.book_amount_myr * sign
-        if expense >= 0:
+        if event.reverses_event_id:
+            if expense < 0:
+                values[channel]["gross"] += expense
+            elif expense > 0:
+                values[channel]["refunds"] -= expense
+        elif expense >= 0:
             values[channel]["gross"] += expense
         else:
             values[channel]["refunds"] -= expense
